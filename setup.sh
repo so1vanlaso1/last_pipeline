@@ -30,6 +30,7 @@
 #   CF_TUNNEL=1                 # 1=auto Cloudflare tunnel for a public URL; 0=off
 #   PHYSICS_LLM_FALLBACK=1      # 1=LLM fills physics answers only when the solver abstains
 #   HF_TOKEN=                   # only needed if you switch MODEL_ID to a gated repo
+#   VLLM_TORCH_BACKEND=auto     # torch CUDA build for vLLM: auto|cu128|cu126|cu130 (auto = match driver)
 #   SKIP_INSTALL=0              # 1=skip pip install (just (re)launch the servers)
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -81,17 +82,29 @@ source "$ROOT/.venv/bin/activate"
 
 # ── 4. Python deps ───────────────────────────────────────────────────────────
 if [ "$SKIP_INSTALL" != "1" ]; then
-    python -m pip install --upgrade pip wheel setuptools
+    python -m pip install --upgrade pip wheel setuptools uv
 
-    echo "== Installing vLLM (this pulls a CUDA-matched torch; can take a while) =="
-    if [ -n "${VLLM_VERSION:-}" ]; then
-        pip install "vllm==${VLLM_VERSION}"
-    else
-        pip install vllm
-    fi
+    # IMPORTANT: plain `pip install vllm` may pull a torch built for a NEWER CUDA
+    # than the box's NVIDIA driver supports → vLLM dies at startup with
+    # "The NVIDIA driver on your system is too old (found version …)". We install
+    # via `uv pip install --torch-backend=…`, which picks the torch CUDA build that
+    # matches the detected driver. Override with VLLM_TORCH_BACKEND (auto|cu128|
+    # cu126|cu130|…); 'auto' detects the driver (recommended).
+    echo "== Installing vLLM with a driver-matched torch (uv --torch-backend) =="
+    VLLM_SPEC="vllm"; [ -n "${VLLM_VERSION:-}" ] && VLLM_SPEC="vllm==${VLLM_VERSION}"
+    uv pip install --python "$(command -v python)" "${VLLM_SPEC}" \
+        --torch-backend="${VLLM_TORCH_BACKEND:-auto}"
 
     echo "== Installing gateway + physics-pipeline requirements =="
     pip install -r "$SERVE/requirements.txt"
+
+    # Sanity: fail fast (with a clear message) if torch can't see the GPU — almost
+    # always a torch/driver CUDA mismatch. Set VLLM_TORCH_BACKEND=cu128 and re-run.
+    python - <<'PY' || { echo "[setup] ERROR: torch cannot use the GPU — likely a CUDA/driver mismatch. Re-run with VLLM_TORCH_BACKEND=cu128 (or cu126)." >&2; exit 3; }
+import torch, sys
+print(f"  torch {torch.__version__}, cuda_available={torch.cuda.is_available()}")
+sys.exit(0 if torch.cuda.is_available() else 1)
+PY
 else
     echo "== SKIP_INSTALL=1 → skipping pip install =="
 fi
