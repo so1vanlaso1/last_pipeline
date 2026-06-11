@@ -22,7 +22,7 @@ GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.90}"
 # a big vocab can OOM an 8B bf16 model on a 24 GB card right at startup). Raise it
 # only if you actually batch many requests at once.
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-16}"
-CF_TUNNEL="${CF_TUNNEL:-1}"
+CF_TUNNEL="${CF_TUNNEL:-0}"   # legacy Cloudflare quick tunnel OFF by default; ngrok is the public tunnel
 
 export VLLM_BASE_PORT GPU_MEM_UTIL
 export GATEWAY_LLM="${GATEWAY_LLM:-vllm}"
@@ -230,7 +230,37 @@ echo "[run] gateway ready."
 
 # ── 3. Public URL (Cloudflare quick tunnel) ──────────────────────────────────
 PUBLIC_URL=""
-if [ "$CF_TUNNEL" = "1" ]; then
+
+# ngrok (default ON) — the public static tunnel. Reads the agent authtoken stored by
+# `ngrok config add-authtoken <TOKEN>`. Set NGROK_DOMAIN=<reserved-domain> to pin a
+# specific static domain (custom names need a PAID plan; on Free the account's single
+# assigned domain is used automatically and is stable across restarts). NGROK=0 disables.
+NGROK="${NGROK:-1}"
+NGROK_BIN="$HERE/ngrok"
+if [ "$NGROK" = "1" ] && [ -x "$NGROK_BIN" ]; then
+    if [ ! -f "${HOME}/.config/ngrok/ngrok.yml" ] && [ -z "${NGROK_AUTHTOKEN:-}" ]; then
+        echo "[run] ngrok: no authtoken configured — skipping (run: $NGROK_BIN config add-authtoken <TOKEN>)" >&2
+    else
+        pkill -f 'ngrok http' 2>/dev/null || true        # one agent session per account
+        sleep 1
+        NGROK_URLF=(); [ -n "${NGROK_DOMAIN:-}" ] && NGROK_URLF=(--url="https://${NGROK_DOMAIN}")
+        echo "[run] starting ngrok → http://localhost:${GATEWAY_PORT}${NGROK_DOMAIN:+ (domain ${NGROK_DOMAIN})}"
+        nohup "$NGROK_BIN" http "$GATEWAY_PORT" "${NGROK_URLF[@]}" --log=stdout --log-format=logfmt \
+            > "$LOGDIR/ngrok.log" 2>&1 &
+        echo $! > "$LOGDIR/ngrok.pid"
+        for _ in $(seq 1 40); do
+            PUBLIC_URL="$(grep -oE 'url=https://[A-Za-z0-9.:/-]+' "$LOGDIR/ngrok.log" 2>/dev/null | head -n1 | sed 's/^url=//')"
+            [ -n "$PUBLIC_URL" ] && break
+            grep -q 'ERR_NGROK' "$LOGDIR/ngrok.log" 2>/dev/null && { echo "[run] ngrok failed — see $LOGDIR/ngrok.log" >&2; break; }
+            sleep 1
+        done
+        [ -n "$PUBLIC_URL" ] && echo "[run] ngrok URL: $PUBLIC_URL"
+    fi
+fi
+
+# Cloudflare quick tunnel — legacy fallback, used only if ngrok produced no URL and
+# CF_TUNNEL=1. Gives an EPHEMERAL *.trycloudflare.com URL that changes every restart.
+if [ -z "$PUBLIC_URL" ] && [ "$CF_TUNNEL" = "1" ]; then
     CF_BIN="$HERE/cloudflared"
     if [ ! -x "$CF_BIN" ]; then
         echo "[run] downloading cloudflared…"
