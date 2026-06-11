@@ -58,6 +58,9 @@ bash setup.sh          # installs, downloads the line-up, launches vLLMs + gatew
 
 The public URLs are written to `serve/submission/urls.txt`. Stop with
 `bash serve/stop.sh`. Re-launch without reinstalling: `SKIP_INSTALL=1 bash setup.sh`.
+Live Type 1 model calls are appended to `serve/logs/log.txt`; each entry includes
+the stage, model, loaded-model list for that call, `nvidia-smi` VRAM snapshot,
+system/user input, and raw model output.
 
 GPU sizing for the default line-up:
 
