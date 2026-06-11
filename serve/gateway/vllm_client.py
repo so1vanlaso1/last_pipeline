@@ -158,6 +158,7 @@ class LLMClient:
         enable_thinking: Optional[bool] = None,
         log_context: Optional[str] = None,
         loaded_models: Optional[List[str]] = None,
+        response_format: Optional[dict] = None,
     ) -> str:
         """Single-turn chat completion. Returns the assistant text (think-stripped).
 
@@ -189,6 +190,7 @@ class LLMClient:
                 temperature=temperature,
                 enable_thinking=effective_enable,
                 raw_out=_set_raw,
+                response_format=response_format,
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -215,6 +217,7 @@ class LLMClient:
         temperature: float,
         enable_thinking: Optional[bool],
         raw_out,
+        response_format: Optional[dict] = None,
     ) -> str:
         messages = [
             {"role": "system", "content": system},
@@ -229,6 +232,11 @@ class LLMClient:
             # whose chat template ignores the kwarg.
             "chat_template_kwargs": {"enable_thinking": enable_thinking},
         }
+        # Structured output: force a valid JSON object via vLLM guided decoding. Used
+        # for the NON-thinking generator calls — Qwen3.5-4B @ FP8 otherwise dumps prose
+        # and malformed JSON (unquoted string values) that fails to parse.
+        if response_format is not None:
+            payload["response_format"] = response_format
         url = self.base_url + "/chat/completions"
         resp = requests.post(url, json=payload, timeout=self.timeout)
         if resp.status_code >= 400:

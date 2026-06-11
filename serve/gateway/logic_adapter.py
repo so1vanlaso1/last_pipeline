@@ -62,6 +62,7 @@ def _chat(
     max_tokens: int,
     temperature: float = 0.0,
     enable_thinking: Optional[bool] = None,
+    response_format: Optional[dict] = None,
 ) -> str:
     return client.chat(
         system,
@@ -71,6 +72,7 @@ def _chat(
         enable_thinking=enable_thinking,
         log_context=f"type1 query_id={query_id or 'q'} stage={stage}",
         loaded_models=model_labels(loaded_clients),
+        response_format=response_format,
     )
 
 
@@ -368,10 +370,14 @@ def _generate_candidate(
     system = rules_for(record) + persona + _gen_format(record)
     user = build_user(record)
     try:
-        # enable_thinking defaults to the model's configured thinking mode.
+        # enable_thinking defaults to the model's configured thinking mode. For a
+        # NON-thinking generator, force structured JSON (vLLM guided decoding) so a
+        # weaker model (Qwen3.5-4B @ FP8) can't emit prose / unquoted-string JSON.
+        rf = None if client.thinking else {"type": "json_object"}
         text = _chat(
             client, system, user, query_id=record.id, stage="arbiter.generator",
             loaded_clients=loaded_clients, max_tokens=_think_tokens(),
+            response_format=rf,
         )
     except Exception:
         text = ""
@@ -496,10 +502,12 @@ def _arbiter_free_form(gen_specs, arbiter: LLMClient, q: PredictQuery) -> Predic
     def gen(spec):
         c, persona = spec
         try:
+            rf = None if c.thinking else {"type": "json_object"}
             text = _chat(
                 c, gsys + persona, guser, query_id=q.query_id,
                 stage="arbiter.free_form_generator",
                 loaded_clients=[s[0] for s in gen_specs], max_tokens=_think_tokens(),
+                response_format=rf,
             )
         except Exception:
             text = ""
