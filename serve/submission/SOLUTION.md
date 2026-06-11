@@ -117,3 +117,74 @@ can additionally be published directly (`MODELS_URL_<port>_DIRECT` in `urls.txt`
 the ports are exposed. All URLs are listed in `urls.txt` (one per server, §6.3);
 `GET /servers` indexes them, `GET /v1/models` aggregates them, and `GET /health` shows
 the live per-server asleep-state + VRAM. Both Type 1 and Type 2 use these same models.
+
+## 5. Type 2 (physics) pipeline in detail
+
+The Type 2 path reuses the `exact_fama.ExactFamaPipeline` verbatim behind the
+gateway's `PhysicsAdapter`. A deterministic solver owns the answer and unit; the
+shared 4B generator is invoked only as a guarded fallback when that solver abstains.
+
+```
+question text ──► LaTeX→ASCII normalize ──► quantity extractor (regex, SI normalization)
+              ──► registered deterministic solvers (formula/template) ──► answer + unit
+                     │  abstains ("Uncertain") / formula error / conf < 0.35
+                     ▼
+              rule-based PhysicsCanonicalizer ──► re-solve deterministically
+                     │  still Uncertain
+                     ▼
+              single guarded CoT LLM (first generator) fills the value only
+              ──► ASCII unit (to_ascii_unit) ──► {answer, unit, premises_used: []}
+```
+
+**Understanding.** The extractor (`physics/extractor.py`, `physics_solvers/common.py`)
+parses physical quantities directly from the problem text with unit-aware regexes. It
+handles scientific notation (`2×10^-6`, `2.0e-6`, `10^-9`), Unicode superscripts/
+subscripts, Greek symbols (μ, Ω, π), and SI prefixes, converting every value to SI via
+an explicit multiplier table (`mA→1e-3`, `kΩ→1e3`, `μF→1e-6`, `nC→1e-9`, …). Symbols are
+inferred from both name (`voltage`, `current`, `capacitance`) and unit context (a bare
+`C` in coulombs becomes charge `Q`; `N/C` or `V/m` becomes field `Efield`). Two layers
+keep this robust to the committee's LaTeX: (1) the **Notation Mapping CSV**
+(`notation_mapping.csv`) declares the ASCII forms our regexes expect, so the committee
+rewrites their LaTeX into them before sending; (2) a defensive in-pipeline
+`latex_to_ascii` pass (`gateway/units.py`) normalizes any remaining LaTeX up front
+(`\times 10^{n}→e-notation`, `\mu F→uF`, `\Omega→ohm`, `R_1`/`R₁→R1`, numeric
+`\frac{a}{b}→` decimal) — both verified against the real extractor, idempotent on
+already-ASCII input.
+
+**Reasoning (deterministic, code-not-LLM).** `solve_physics` runs the question through
+an ordered registry of ~21 deterministic solvers (`physics_solvers/registry.py`); the
+first to match returns the result. Coverage implemented in code spans: **DC circuits** —
+Ohm's law (V=IR, I=V/R, R=V/I), series/parallel equivalent resistance, electric power
+(P=VI, P=I²R, P=V²/R), battery terminal voltage (U=E−Ir), voltage dividers, parallel
+bulbs, temperature-dependent resistance; **capacitors** — Q=CV, V=Q/C, energy E=½CV²,
+series/parallel combinations and series voltage division, parallel-plate field and
+capacitance; **electrostatics** — Coulomb's law F=k|Q₁Q₂|/r², point-charge field
+E=k|Q|/r² and potential V=kQ/r, field-from-force E=F/Q, and full vector superposition
+over triangle/line geometries; **AC / RLC** — reactances, impedance, RMS current, power
+factor, operating-point; **LC resonance** — required C or L and f=1/(2π√(LC));
+**magnetism/induction** — solenoid field B=μ₀NI/l, self-inductance, Faraday/self-induced
+emf ε=−L·ΔI/Δt, flux; plus measurement-uncertainty (percentage error) and conceptual
+templates. The chosen formula computes the value; output uses question-driven rounding
+("two decimal places", "nearest integer") and the unit comes from the matched relation —
+never from a language model.
+
+**Explanation generation.** Each deterministic result carries solver evidence — the
+selected formula, the extracted quantities, and a 4-step CoT (extract → select formula →
+substitute → final answer). The optional `ExplanationGenerator.rewrite` turns that into
+prose under hard constraints: it must copy `fixed_answer`/`fixed_unit` unchanged and may
+not invent numbers, units, or premises (a banned-phrase guard strips internal terms).
+This rewrite is **off by default** at the gateway (`PHYSICS_LLM_EXPLANATION=0`) to
+protect the speed bonus, so the explanation is the solver's own draft. The unit is
+finally rendered ASCII by `to_ascii_unit` (Ω→ohm, μ→u, superscripts→digits): `uF`,
+`ohm`, `V/m`, `N/C`.
+
+**Robustness / fallback.** When the deterministic solver abstains — answer `Uncertain`,
+a `PHYSICS_FORMULA_ERROR`, or confidence < 0.35 — the **rule-based**
+`PhysicsCanonicalizer` rewrites the question into one of 18 known canonical families
+(preserving every original number; it never answers) and the solver runs again; the
+rewrite is accepted only if it produces a confident (≥ 0.45) result and never overrides
+a confident baseline. If the pipeline still returns `Uncertain`, the gateway makes a
+**single guarded chain-of-thought call to the first 4B generator** (toggle
+`PHYSICS_LLM_FALLBACK`) for a JSON `{answer, unit, steps}`; its value is used only
+because there was nothing to preserve — it can never overwrite a confident solver
+answer. For every Type 2 query, `premises_used` is always `[]`.

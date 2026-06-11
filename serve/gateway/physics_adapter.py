@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from . import _paths  # noqa: F401  (side-effect: put physic_pipeline/src on sys.path)
 from .schema import PredictQuery, PredictResult, Reasoning
-from .units import to_ascii_unit
+from .units import latex_to_ascii, to_ascii_unit
 from .vllm_client import LLMClient
 
 _UNCERTAIN = {"", "uncertain", "unknown"}
@@ -75,12 +75,16 @@ class PhysicsAdapter:
             self.import_error = f"{type(exc).__name__}: {exc}"
 
     def answer(self, q: PredictQuery) -> PredictResult:
+        # Convert the committee's LaTeX into the ASCII the deterministic extractor
+        # parses (e-notation, ohm, uF, R1) up front, so solving is robust even if the
+        # notation-map regex missed something. See units.latex_to_ascii.
+        question = latex_to_ascii(q.query or "")
         if self.pipeline is None:
             return self._fallback_or_uncertain(q, reason=f"physics pipeline unavailable ({self.import_error})")
 
         from exact_fama.schemas import PredictRequest  # type: ignore
 
-        req = PredictRequest(question=q.query or "", type="physics")
+        req = PredictRequest(question=question, type="physics")
         resp = self.pipeline.predict(req)
 
         answer = str(resp.answer or "").strip()
@@ -89,7 +93,7 @@ class PhysicsAdapter:
         explanation = (resp.explanation or "").strip() or "Computed from the stated physical quantities."
 
         if answer.lower() in _UNCERTAIN and self.fallback_enabled:
-            fb = self._llm_fallback(q.query or "")
+            fb = self._llm_fallback(question)
             if fb is not None:
                 answer, unit, fb_steps = fb
                 steps = fb_steps or steps
@@ -135,7 +139,7 @@ class PhysicsAdapter:
 
     def _fallback_or_uncertain(self, q: PredictQuery, reason: str) -> PredictResult:
         if self.fallback_enabled:
-            fb = self._llm_fallback(q.query or "")
+            fb = self._llm_fallback(latex_to_ascii(q.query or ""))
             if fb is not None:
                 answer, unit, steps = fb
                 return PredictResult(

@@ -74,8 +74,9 @@ server_up() { curl -fsS "http://localhost:$1/v1/models" >/dev/null 2>&1; }
 
 download_model() {
     local MID="$1"
-    # The default line-up (Qwen3.5 + Gemma-4) is ungated — no HF_TOKEN needed. If you
-    # point at a gated repo, just `export HF_TOKEN=hf_...` and it is passed through.
+    # The default line-up (Qwen3-4B + Qwen3-4B-Instruct-2507 + gemma-4-E4B-it) is
+    # ungated — no HF_TOKEN needed. For a gated repo, `export HF_TOKEN=hf_...` and it
+    # is passed through.
     echo "[run] downloading ${MID} (if not cached)…"
     HF_TOKEN="${HF_TOKEN:-}" python - "$MID" <<'PY' || echo "[run] (download will fall back to vLLM's own fetch)"
 import os, sys
@@ -106,8 +107,8 @@ start_one() {                                    # MID PORT FRAC QUANT
     # GPUs (RTX 50xx) with an older driver, the prebuilt flash-attn ViT kernel can fail
     # with cudaErrorUnsupportedPtxVersion; set VIT_ATTN_BACKEND=TORCH_SDPA to avoid it.
     local VITF=(); [ -n "${VIT_ATTN_BACKEND:-}" ] && VITF=(--mm-encoder-attn-backend "$VIT_ATTN_BACKEND")
-    # The logic + physics flow is TEXT-ONLY, but the default line-up (Qwen3.5-4B,
-    # Gemma-4) ships as vision-language checkpoints. Left alone, vLLM loads their
+    # The logic + physics flow is TEXT-ONLY. The judge (gemma-4-E4B-it) ships as a
+    # vision-language checkpoint; left alone, vLLM loads its
     # vision encoder AND memory-profiles it with a max-size dummy image — a ~7 GB
     # peak that pushed the co-resident generator on :8001 to "Available KV cache
     # memory: -7.3 GiB" and a hard ValueError on its tight gpu_frac slice. The
@@ -228,7 +229,7 @@ for _ in $(seq 1 120); do
 done
 echo "[run] gateway ready."
 
-# ── 3. Public URL (Cloudflare quick tunnel) ──────────────────────────────────
+# ── 3. Public URL (ngrok primary; Cloudflare quick tunnel legacy fallback) ────
 PUBLIC_URL=""
 
 # ngrok (default ON) — the public static tunnel. Reads the agent authtoken stored by

@@ -12,8 +12,8 @@
 #   3. download the models in serve/logic_config.yaml (generators + judge),
 #   4. launch one vLLM server per model (each exposes /v1/models for verification),
 #   5. launch the gateway      (the single competition /predict endpoint),
-#   6. open a public URL (Cloudflare quick tunnel) and write it to
-#      serve/submission/urls.txt.
+#   6. open a public URL (ngrok tunnel — set NGROK_AUTHTOKEN=<your token>) and
+#      write it to serve/submission/urls.txt.
 #
 # Servers run in the background (survive SSH disconnect). Stop with:
 #     bash serve/stop.sh
@@ -22,15 +22,23 @@
 #   MODEL_ID=google/gemma-4-E4B-it  # fallback single LLM if logic_config.yaml is absent
 #   JUDGE_MODEL=google/gemma-4-E4B-it  # the Type-1 JUDGE repo (default Gemma-4-E4B; any HF id)
 #   JUDGE_PARAMS_B=8            # size the residency budget counts for the judge (default 8)
-#   VLLM_VERSION=0.19.1         # pinned CUDA-12 vLLM (works on drivers up to CUDA 12.9). On a
-#                               # CUDA-13 box (driver >= 580) set a newer version or 'latest'.
+#   VLLM_VERSION=               # vLLM version. DEFAULT auto: empty (=latest) on a CUDA>=13
+#                               # box (driver >= 580, Blackwell sm_120 — THIS droplet), and
+#                               # pinned 0.19.1 (CUDA-12 wheel) only when nvidia-smi reports
+#                               # CUDA 12. Override to force a specific version.
 #   VLLM_PORT=8001              # vLLM OpenAI server port (internal)
 #   GATEWAY_PORT=8000           # gateway /predict port (internal)
 #   MAX_MODEL_LEN=8192          # vLLM context length
 #   GPU_MEM_UTIL=0.90           # vLLM GPU memory fraction
 #   MAX_NUM_SEQS=16             # max concurrent seqs per server (small = less startup VRAM; gateway is sequential)
 #   QUANTIZATION=none           # precision for every model: none(bf16) | 8bit | 4bit
-#   CF_TUNNEL=1                 # 1=auto Cloudflare tunnel for a public URL; 0=off
+#   NGROK_AUTHTOKEN=            # REQUIRED for a public URL — your ngrok agent authtoken
+#                               # (https://dashboard.ngrok.com). setup.sh downloads the ngrok
+#                               # binary and runs `ngrok config add-authtoken` with it.
+#   NGROK_DOMAIN=               # OPTIONAL — pin a reserved static ngrok domain (else the
+#                               # account's default assigned domain, stable across restarts).
+#   CF_TUNNEL=0                 # legacy Cloudflare quick-tunnel fallback (only if ngrok gave
+#                               # no URL); ngrok is the default public tunnel now.
 #   PHYSICS_LLM_FALLBACK=1      # 1=LLM fills physics answers only when the solver abstains
 #   HF_TOKEN=                   # OPTIONAL — the default line-up (Qwen + Gemma-4) is ungated
 #   SKIP_INSTALL=0              # 1=skip pip install (just (re)launch the servers)
@@ -46,9 +54,24 @@ export PYTHONUTF8=1
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-0}"
 
 MODEL_ID="${MODEL_ID:-google/gemma-4-E4B-it}"
-# Pin a CUDA-12 vLLM by default so a driver up to CUDA 12.9 works out of the box.
-# Override (e.g. VLLM_VERSION= for latest) on a CUDA-13 box (driver >= 580).
-VLLM_VERSION="${VLLM_VERSION:-0.19.1}"
+# Choose the vLLM version from the box's CUDA. vLLM ships ONE CUDA build per release:
+# the LATEST wheel targets CUDA 13 / Blackwell sm_120 (driver >= 580 — THIS droplet);
+# the 0.19.1 wheel is a CUDA-12 build for older drivers (up to CUDA 12.9). Auto-detect
+# the runtime CUDA major from nvidia-smi and default accordingly (operator override wins).
+if [ -z "${VLLM_VERSION:-}" ]; then
+    CUDA_MAJOR="$(nvidia-smi --query-gpu=cuda_version --format=csv,noheader 2>/dev/null | head -n1 | cut -d. -f1 | tr -d '[:space:]')"
+    if [ -z "$CUDA_MAJOR" ]; then
+        # Fallback: parse the 'CUDA Version: NN.N' field from plain nvidia-smi.
+        CUDA_MAJOR="$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \([0-9]*\).*/\1/p' | head -n1)"
+    fi
+    if [ -n "$CUDA_MAJOR" ] && [ "$CUDA_MAJOR" -lt 13 ] 2>/dev/null; then
+        VLLM_VERSION="0.19.1"   # CUDA-12 box → pinned cu12 wheel
+        echo "[setup] nvidia-smi CUDA ${CUDA_MAJOR} (<13) → pinning vLLM ${VLLM_VERSION} (CUDA-12 wheel)"
+    else
+        VLLM_VERSION=""         # CUDA>=13 (or unknown) → latest wheel (Blackwell/CUDA-13)
+        echo "[setup] nvidia-smi CUDA ${CUDA_MAJOR:-unknown} → installing latest vLLM (CUDA-13/Blackwell wheel)"
+    fi
+fi
 SKIP_INSTALL="${SKIP_INSTALL:-0}"
 
 echo "=================================================================="
@@ -92,9 +115,10 @@ if [ "$SKIP_INSTALL" != "1" ]; then
     # vLLM ships ONE CUDA build per release and pulls its OWN matching torch, so we
     # install them together as a consistent stack. Do NOT swap only torch's CUDA:
     # vLLM's compiled extension (vllm._C) would then mismatch
-    # (ImportError: libcudart.so.<N>). VLLM_VERSION defaults to 0.19.1 — a CUDA-12
-    # build that runs on drivers up to CUDA 12.9 and supports the Qwen3.5 + Gemma-4
-    # line-up. On a CUDA-13 box (driver >= 580) set VLLM_VERSION= (empty) for latest.
+    # (ImportError: libcudart.so.<N>). VLLM_VERSION is auto-selected above from the
+    # box's CUDA: empty (latest, CUDA-13/Blackwell wheel — THIS droplet's RTX 5090)
+    # on CUDA>=13, or pinned 0.19.1 (CUDA-12 wheel) on CUDA 12. The line-up
+    # (Qwen3-4B + Qwen3-4B-Instruct-2507 generators + gemma-4-E4B-it judge) loads on both.
     echo "== Installing vLLM (+ its matching torch; can take a while) =="
     if [ -n "${VLLM_VERSION:-}" ]; then
         pip install "vllm==${VLLM_VERSION}"
@@ -135,6 +159,36 @@ PYTHONPATH="$SERVE:$ROOT/physic_pipeline/src:$ROOT/logic_pipeline/src" python -m
     echo "[error] serve/logic_config.yaml exceeds its residency budget. Fix it before launching." >&2
     exit 2
 }
+
+# ── 6b. ngrok public tunnel: fetch the binary + register the authtoken ────────
+# The live droplet's public URL is an ngrok tunnel. run_server.sh only starts ngrok
+# if the serve/ngrok binary exists AND an authtoken is configured, so a fresh box
+# needs both set up here. NGROK_AUTHTOKEN is the ONE secret the operator must supply
+# (get it at https://dashboard.ngrok.com); without it the box still runs but exposes
+# only the raw public-IP:port (no stable public URL). Set NGROK=0 to skip entirely.
+if [ "${NGROK:-1}" != "0" ]; then
+    NGROK_BIN="$SERVE/ngrok"
+    if [ ! -x "$NGROK_BIN" ]; then
+        case "$(uname -m)" in
+            x86_64|amd64) NG_ARCH=amd64 ;;
+            aarch64|arm64) NG_ARCH=arm64 ;;
+            *) NG_ARCH=amd64 ;;
+        esac
+        echo "== Downloading ngrok ($NG_ARCH) =="
+        curl -fsSL "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-${NG_ARCH}.tgz" -o /tmp/ngrok.tgz \
+            && tar -xzf /tmp/ngrok.tgz -C "$SERVE" ngrok \
+            && chmod +x "$NGROK_BIN" \
+            && echo "[setup] ngrok installed → $NGROK_BIN" \
+            || echo "[setup][warn] ngrok download failed — the box will come up without a public URL." >&2
+    fi
+    if [ -x "$NGROK_BIN" ] && [ -n "${NGROK_AUTHTOKEN:-}" ]; then
+        "$NGROK_BIN" config add-authtoken "$NGROK_AUTHTOKEN" \
+            && echo "[setup] ngrok authtoken registered." \
+            || echo "[setup][warn] could not register the ngrok authtoken." >&2
+    elif [ -x "$NGROK_BIN" ] && [ ! -f "${HOME}/.config/ngrok/ngrok.yml" ]; then
+        echo "[setup][warn] NGROK_AUTHTOKEN not set and no ~/.config/ngrok/ngrok.yml — the public URL will be SKIPPED. Export NGROK_AUTHTOKEN=<token> and re-run, or run: $NGROK_BIN config add-authtoken <token>" >&2
+    fi
+fi
 
 # ── 7. Launch the servers + tunnel ───────────────────────────────────────────
 export MODEL_ID

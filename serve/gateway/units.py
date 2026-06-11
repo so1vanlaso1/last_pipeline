@@ -57,6 +57,83 @@ def to_ascii_unit(unit: Optional[str]) -> str:
     return u
 
 
+# ── LaTeX → ASCII pre-extraction normalization (Type 2 physics) ──────────────
+# The committee sends problems in LaTeX; the deterministic physics extractor parses
+# ASCII (e-notation, 'ohm', 'uF', 'R1'). This pass converts the LaTeX our notation
+# map declares (serve/submission/notation_mapping.csv) so the pipeline parses
+# correctly EVEN IF the committee's regex substitution misses something. It also
+# fixes the cases a CSV cell cannot: numeric \frac, '\mu F' spacing, and Unicode
+# subscripts (R₁). Order-locked — scientific notation is converted FIRST so a generic
+# multiply can never turn '3 \times 10^{-6}' into '3*10^{-6}' (which the extractor
+# rejects). Idempotent: already-ASCII competition input passes through unchanged.
+_SUBSCRIPT_DIGITS = str.maketrans({
+    "₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4",
+    "₅": "5", "₆": "6", "₇": "7", "₈": "8", "₉": "9",
+})
+
+# \greek -> spelled-out ASCII (varepsilon/varphi before epsilon/phi; longest first).
+_GREEK = [
+    (r"\\varepsilon", "epsilon"), (r"\\epsilon", "epsilon"),
+    (r"\\varphi", "phi"), (r"\\Phi", "Phi"), (r"\\phi", "phi"),
+    (r"\\alpha", "alpha"), (r"\\beta", "beta"), (r"\\gamma", "gamma"),
+    (r"\\Delta", "Delta"), (r"\\delta", "delta"), (r"\\theta", "theta"),
+    (r"\\lambda", "lambda"), (r"\\sigma", "sigma"), (r"\\tau", "tau"),
+    (r"\\rho", "rho"), (r"\\pi", "pi"),
+    (r"\\nabla", "nabla"), (r"\\partial", "partial"),
+    (r"\\int", "integral"), (r"\\sum", "sum"),
+]
+
+
+def _frac_sub(m: "re.Match") -> str:
+    """Numeric \\frac{a}{b} -> its decimal (so the value extractor sees a number);
+    a non-numeric fraction becomes (a)/(b) for the symbolic evaluators."""
+    a, b = m.group(1), m.group(2)
+    try:
+        v = float(a) / float(b)
+        return str(int(v)) if v == int(v) else repr(v)
+    except (ValueError, ZeroDivisionError):
+        return f"({a})/({b})"
+
+
+def latex_to_ascii(text: Optional[str]) -> str:
+    """Normalize a LaTeX physics problem into the ASCII the extractor parses."""
+    if not text:
+        return text or ""
+    t = str(text)
+    # 1. Scientific notation FIRST: <num> (\times|\cdot|×|·|x|*) 10^{n} -> <num>e<n>.
+    #    Anchored to a preceding digit so 'max 10^3' is untouched.
+    t = re.sub(
+        r"(\d)\s*(?:\\times|\\cdot|×|·|[xX*])\s*10\s*\^\s*\{?\s*([-+]?\d+)\s*\}?",
+        r"\1e\2", t)
+    # 2. Micro prefix glued to its unit: \mu F / µ F / μ F -> uF ; standalone -> u.
+    t = re.sub(r"(?:\\mu|µ|μ)\s*([FCHJAVWgsm])", r"u\1", t)
+    t = re.sub(r"(?:\\mu|µ|μ)", "u", t)
+    # 3. Ohm unit: \Omega / Ω -> ohm ; \omega right after a number is an ohm unit.
+    t = re.sub(r"\\Omega|Ω", "ohm", t)
+    t = re.sub(r"(?<=\d)\s*\\omega\b", " ohm", t)
+    t = re.sub(r"\\omega", "omega", t)
+    # 4. Subscripts: R₁ / R_1 / R_{1} -> R1 (letter + digits only).
+    t = t.translate(_SUBSCRIPT_DIGITS)
+    t = re.sub(r"([A-Za-z])_\{?(\d+)\}?", r"\1\2", t)
+    # 5. Numeric \frac{a}{b} -> decimal.
+    t = re.sub(r"\\frac\s*\{\s*(-?\d+(?:\.\d+)?)\s*\}\s*\{\s*(-?\d+(?:\.\d+)?)\s*\}",
+               _frac_sub, t)
+    # 6. Roots and remaining operators (sci-notation already handled above).
+    t = re.sub(r"\\sqrt\s*\{([^}]*)\}", r"sqrt(\1)", t)
+    t = t.replace(r"\sqrt", "sqrt")
+    for a, b in ((r"\leq", "<="), (r"\geq", ">="), (r"\neq", "!="),
+                 (r"\approx", "~"), (r"\propto", "~"), (r"\div", "/"),
+                 (r"\pm", "+/-"), (r"\mp", "-/+"), (r"\infty", "infinity"),
+                 (r"\degree", "deg"), (r"\angle", "angle"),
+                 (r"\times", "*"), (r"\cdot", "*")):
+        t = t.replace(a, b)
+    # 7. Greek symbols -> spelled out; drop \vec{}/\hat{} decoration (keep the symbol).
+    for pat, word in _GREEK:
+        t = re.sub(pat, word, t)
+    t = re.sub(r"\\(?:vec|hat)\s*\{([^}]*)\}", r"\1", t)
+    return t
+
+
 # ── Type 1 option matching ───────────────────────────────────────────────────
 def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (s or "").lower())

@@ -3,53 +3,53 @@ canonical_latex,meaning,your_notation
 -,subtraction,
 \times,multiply,
 \cdot,dot multiply,
-\div,divide,
+\div,divide,/
 /,fraction slash,
-\pm,plus-minus,
-\mp,minus-plus,
+\pm,plus-minus,+/-
+\mp,minus-plus,-/+
 =,equals,
-\approx,approximately equal,
-\neq,not equal,
+\approx,approximately equal,~
+\neq,not equal,!=
 <,less than,
 >,greater than,
-\leq,less than or equal,
-\geq,greater than or equal,
-\propto,proportional to,
-\infty,infinity,
-a^b,power / superscript,
-a_b,subscript,
-\sqrt{},square root,
-\sqrt[n]{},nth root,
-\frac{a}{b},fraction,
-\times 10^{n},scientific notation,
-\alpha,alpha,
-\beta,beta,
-\gamma,gamma,
-\delta,delta,
-\Delta,change in,
-\epsilon,permittivity,
-\varepsilon,permittivity,
-\theta,theta,
-\lambda,linear charge density,
+\leq,less than or equal,<=
+\geq,greater than or equal,>=
+\propto,proportional to,~
+\infty,infinity,infinity
+a^b,power / superscript,a^b
+a_b,subscript,ab
+\sqrt{},square root,sqrt()
+\sqrt[n]{},nth root,()^(1/n)
+\frac{a}{b},fraction,(a)/(b)
+\times 10^{n},scientific notation,e{n}
+\alpha,alpha,alpha
+\beta,beta,beta
+\gamma,gamma,gamma
+\delta,delta,delta
+\Delta,change in,Delta
+\epsilon,permittivity,epsilon
+\varepsilon,permittivity,epsilon
+\theta,theta,theta
+\lambda,linear charge density,lambda
 \mu,micro prefix / permeability,u
-\pi,pi,
-\rho,resistivity / volume charge density,
-\sigma,conductivity / surface charge density,
-\tau,time constant,
-\phi,potential / flux,
-\varphi,potential / flux,
-\Phi,flux,
-\omega,angular frequency,
+\pi,pi,pi
+\rho,resistivity / volume charge density,rho
+\sigma,conductivity / surface charge density,sigma
+\tau,time constant,tau
+\phi,potential / flux,phi
+\varphi,potential / flux,phi
+\Phi,flux,Phi
+\omega,angular frequency,omega
 \Omega,ohm,ohm
-\int,integral,
-\sum,sum,
-\partial,partial derivative,
-\nabla,nabla / del,
+\int,integral,integral
+\sum,sum,sum
+\partial,partial derivative,partial
+\nabla,nabla / del,nabla
 \vec{},vector,
 \hat{},unit vector,
 V,volt,
 A,ampere,
-ohm,ohm,ohm
+ohm,ohm,
 W,watt,
 J,joule,
 C,coulomb,
@@ -66,11 +66,11 @@ m,meter,
 eV,electron volt,
 p,pico,
 n,nano,
-u,micro,u
+u,micro,
 m,milli,
 k,kilo,
 M,mega,
 G,giga,
 \degree,degree,deg
-\%,percent,
-\angle,angle,
+\%,percent,%
+\angle,angle,angle

@@ -42,6 +42,8 @@ UNIT_MULTIPLIERS = {
     "mm": 1e-3,
     "km": 1e3,
     "ev": 1.602176634e-19,
+    "t": 1.0,
+    "tesla": 1.0,
 }
 SYMBOL_ALIASES = {
     "u": "V",
@@ -67,7 +69,7 @@ SYMBOL_ALIASES = {
     "d": "D",
     "distance": "D",
 }
-UNIT_PATTERN = r"microfarads?|μF|uF|mF|nF|pF|F|kΩ|kω|Ω|ω|kohm|ohm|ohms|mA|kA|A|mW|kW|W|J|mC|μC|uC|nC|pC|C|N/C|V/m|km|cm|mm|m|eV|V|volts?"
+UNIT_PATTERN = r"microfarads?|μF|uF|mF|nF|pF|F|kΩ|kω|Ω|ω|kohm|ohm|ohms|mA|kA|A|mW|kW|W|J|mC|μC|uC|nC|pC|C|N/C|V/m|km|cm|mm|m|eV|tesla|T|V|volts?"
 VALUE_PATTERN = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:\s*[eE]\s*[-+]?\d+)?"
 @dataclass
 class Quantity:
