@@ -1,0 +1,19 @@
+model:
+  backend: ${LLM_BACKEND:hf}
+  name: ${MODEL_NAME:models/Qwen3-8B}
+  temperature: ${LLM_TEMPERATURE:0.0}
+  max_new_tokens: ${LLM_MAX_NEW_TOKENS:768}
+  vllm_base_url: ${VLLM_BASE_URL:http://localhost:8001/v1}
+  lora_adapter_path: ${LORA_ADAPTER_PATH:}
+  load_in_4bit: ${LOAD_IN_4BIT:true}
+
+pipeline:
+  mode: full_llm_direct
+  use_llm_for_structured_parse: false
+  use_llm_for_explanation: false
+  use_llm_direct_answer: true
+  full_llm_max_retries: 1
+  require_json_schema: true
+
+fama:
+  numeric_tolerance: 1.0e-6

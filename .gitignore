@@ -1,0 +1,95 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  EXACT 2026 pipeline — .gitignore
+#  Repo holds CODE + config only. Models, venvs, logs, and runtime artifacts are
+#  (re)created on the vast.ai box by `bash setup.sh` and must never be committed.
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── Secrets (HF_TOKEN for gated Gemma, etc. — NEVER commit) ──────────────────
+.env
+.env.*
+!.env.example
+*.secret
+secrets.*
+
+# ── Python virtual envs (setup.sh builds .venv on the remote box) ────────────
+.venv/
+.venv-test/
+venv/
+env/
+ENV/
+
+# ── Python bytecode / build / tooling caches ─────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# ── Model weights & HF / vLLM caches (downloaded at launch, multi-GB) ────────
+**/models/
+.cache/
+huggingface/
+hf_cache/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf
+*.onnx
+
+# ── Datasets (multi-hundred-MB; recreated by the generate_*.py scripts) ──────
+#    Ignore the data *payloads* but keep the generator scripts + READMEs that
+#    live alongside them. We ignore dir *contents* (…/**) rather than the dir
+#    itself so the re-includes below can take effect (git can't un-ignore a file
+#    whose parent directory is fully ignored).
+#    NOTE: git does NOT support trailing inline comments — keep them on own lines.
+physic_pipeline/data/**
+# keep directory structure traversable
+!physic_pipeline/data/**/
+# keep dataset generator scripts
+!physic_pipeline/data/**/generate_*.py
+# keep dataset READMEs
+!physic_pipeline/data/**/*.md
+
+# Catch-all for line-delimited data dumps anywhere in the repo
+*.jsonl
+*.parquet
+*.arrow
+*.feather
+*.npy
+*.npz
+*.h5
+*.hdf5
+
+# ── Pipeline run outputs (timestamped, regenerated each run) ─────────────────
+logic_pipeline/Result/
+
+# ── Gateway runtime artifacts (run_server.sh) ────────────────────────────────
+# vllm_*.log, gateway.log, cloudflared.log, config.err
+serve/logs/
+# cloudflared binary, fetched at launch
+serve/cloudflared
+*.log
+*.pid
+# regenerated each launch (ephemeral tunnel URL)
+serve/submission/urls.txt
+
+# ── OS / editor cruft ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

@@ -1,0 +1,12 @@
+fastapi>=0.110
+gradio>=4.0
+uvicorn[standard]>=0.27
+pydantic>=2.0
+PyYAML>=6.0
+requests>=2.31
+numpy>=1.24
+sympy>=1.12
+z3-solver>=4.12
+pandas>=2.0
+pytest>=8.0
+python-dotenv>=1.0

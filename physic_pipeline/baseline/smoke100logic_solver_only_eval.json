@@ -1,0 +1,1078 @@
+{
+  "total_scored": 100,
+  "accuracy": 0.43,
+  "explanation_coverage": 1.0,
+  "reasoning_field_coverage": 1.0,
+  "details": [
+    {
+      "id": "logic-0335-q1",
+      "gold": "No",
+      "pred": "Yes",
+      "gold_norm": "false",
+      "pred_norm": "true",
+      "correct": false,
+      "warnings": []
+    },
+    {
+      "id": "logic-0015-q0",
+      "gold": "B",
+      "pred": "Uncertain",
+      "gold_norm": "b",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0347-q0",
+      "gold": "Unknown",
+      "pred": "A",
+      "gold_norm": "unknown",
+      "pred_norm": "a",
+      "correct": false,
+      "warnings": []
+    },
+    {
+      "id": "logic-0336-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0253-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0132-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0144-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0064-q0",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0111-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0209-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0271-q1",
+      "gold": "No",
+      "pred": "Yes",
+      "gold_norm": "false",
+      "pred_norm": "true",
+      "correct": false,
+      "warnings": []
+    },
+    {
+      "id": "logic-0020-q1",
+      "gold": "No",
+      "pred": "No",
+      "gold_norm": "false",
+      "pred_norm": "false",
+      "correct": true,
+      "warnings": []
+    },
+    {
+      "id": "logic-0353-q0",
+      "gold": "A",
+      "pred": "A",
+      "gold_norm": "a",
+      "pred_norm": "a",
+      "correct": true,
+      "warnings": []
+    },
+    {
+      "id": "logic-0323-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0302-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0297-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0101-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0102-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_ENTAILMENT_ERROR: contradiction detected between pass_exam(will) and not_pass_exam(will).",
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0110-q0",
+      "gold": "Unknown",
+      "pred": "A",
+      "gold_norm": "unknown",
+      "pred_norm": "a",
+      "correct": false,
+      "warnings": []
+    },
+    {
+      "id": "logic-0350-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0142-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0359-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0225-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0090-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0288-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0140-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0389-q0",
+      "gold": "Yes",
+      "pred": "Uncertain",
+      "gold_norm": "true",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0270-q0",
+      "gold": "C",
+      "pred": "Uncertain",
+      "gold_norm": "c",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0082-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0190-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0096-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0226-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0359-q1",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0152-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0318-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0244-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0015-q1",
+      "gold": "Yes",
+      "pred": "No",
+      "gold_norm": "true",
+      "pred_norm": "false",
+      "correct": false,
+      "warnings": []
+    },
+    {
+      "id": "logic-0243-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0373-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0016-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0358-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0079-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0151-q0",
+      "gold": "Yes",
+      "pred": "Yes",
+      "gold_norm": "true",
+      "pred_norm": "true",
+      "correct": true,
+      "warnings": []
+    },
+    {
+      "id": "logic-0401-q1",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0212-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0314-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0074-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0203-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0290-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0369-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0351-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_ENTAILMENT_ERROR: contradiction detected between participating_in_extracurricular_activities_helps_students_develop_social_skills_understanding_material_will_help_them_perform_well_in_exams(?x) and not_participating_in_extracurricular_activities_helps_students_develop_social_skills_understanding_material_will_help_them_perform_well_in_exams(?x).",
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0339-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0400-q1",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0011-q0",
+      "gold": "D",
+      "pred": "Uncertain",
+      "gold_norm": "d",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0057-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0212-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0017-q0",
+      "gold": "Yes",
+      "pred": "Uncertain",
+      "gold_norm": "true",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0121-q1",
+      "gold": "Unknown",
+      "pred": "No",
+      "gold_norm": "unknown",
+      "pred_norm": "false",
+      "correct": false,
+      "warnings": []
+    },
+    {
+      "id": "logic-0134-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0114-q0",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0304-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0148-q0",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0025-q1",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0309-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0044-q1",
+      "gold": "No",
+      "pred": "No",
+      "gold_norm": "false",
+      "pred_norm": "false",
+      "correct": true,
+      "warnings": []
+    },
+    {
+      "id": "logic-0164-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0302-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0191-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0319-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0399-q1",
+      "gold": "Yes",
+      "pred": "No",
+      "gold_norm": "true",
+      "pred_norm": "false",
+      "correct": false,
+      "warnings": []
+    },
+    {
+      "id": "logic-0264-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0397-q1",
+      "gold": "B",
+      "pred": "Uncertain",
+      "gold_norm": "b",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0000-q0",
+      "gold": "Unknown",
+      "pred": "D",
+      "gold_norm": "unknown",
+      "pred_norm": "d",
+      "correct": false,
+      "warnings": []
+    },
+    {
+      "id": "logic-0313-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0028-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0207-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0376-q0",
+      "gold": "A",
+      "pred": "Uncertain",
+      "gold_norm": "a",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0177-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0205-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0405-q1",
+      "gold": "Yes",
+      "pred": "Uncertain",
+      "gold_norm": "true",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0104-q1",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0167-q1",
+      "gold": "Yes",
+      "pred": "Uncertain",
+      "gold_norm": "true",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0053-q1",
+      "gold": "No",
+      "pred": "Yes",
+      "gold_norm": "false",
+      "pred_norm": "true",
+      "correct": false,
+      "warnings": []
+    },
+    {
+      "id": "logic-0030-q0",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0349-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0123-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0224-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0090-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0124-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0326-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0345-q1",
+      "gold": "Yes",
+      "pred": "Yes",
+      "gold_norm": "true",
+      "pred_norm": "true",
+      "correct": true,
+      "warnings": []
+    },
+    {
+      "id": "logic-0182-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0144-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0240-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0019-q1",
+      "gold": "No",
+      "pred": "No",
+      "gold_norm": "false",
+      "pred_norm": "false",
+      "correct": true,
+      "warnings": []
+    },
+    {
+      "id": "logic-0183-q1",
+      "gold": "Yes",
+      "pred": "Uncertain",
+      "gold_norm": "true",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0248-q1",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0007-q1",
+      "gold": "No",
+      "pred": "No",
+      "gold_norm": "false",
+      "pred_norm": "false",
+      "correct": true,
+      "warnings": []
+    },
+    {
+      "id": "logic-0211-q0",
+      "gold": "Unknown",
+      "pred": "Uncertain",
+      "gold_norm": "unknown",
+      "pred_norm": "unknown",
+      "correct": true,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    },
+    {
+      "id": "logic-0066-q0",
+      "gold": "No",
+      "pred": "Uncertain",
+      "gold_norm": "false",
+      "pred_norm": "unknown",
+      "correct": false,
+      "warnings": [
+        "LOGIC_UNCERTAIN: query was not entailed or contradicted by parsed rules."
+      ]
+    }
+  ]
+}

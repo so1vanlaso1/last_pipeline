@@ -1,0 +1,146 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  Resident LLM line-up for your grading slot  (EXACT 2026)
+# ═══════════════════════════════════════════════════════════════════════════
+# Every model under `models:` is loaded and running AT THE SAME TIME during your
+# slot (one vLLM server each; setup.sh downloads only these; a model that fails
+# to load is skipped and the flow degrades gracefully).
+#
+# Type 1 flow (mode: arbiter — the generate→judge design):
+#
+#     Question
+#        ├─ role "generator" models answer CONCURRENTLY in thinking mode,
+#        │  each emitting {answer, premises_used, explanation}
+#        ├─ the role "judge" model inspects the original premises + question
+#        │  plus both juniors' answers (reference only) and decides the truly
+#        │  correct answer, re-deriving premises_used + explanation itself
+#        ▼
+#     deterministic code → the competition result object (Section 4 schema)
+#
+# Type 2 (physics) uses the FIRST model for its optional LLM calls.
+#
+# ── The models, with the param count the committee counts (TOTAL, see Q2) ────
+#   Qwen/Qwen3.5-4B            4B    (ungated)            generator
+#   google/gemma-4-E2B-it      5.1B total / 2.3B eff  (GATED→HF_TOKEN)  generator
+#   LiquidAI/LFM2.5-8B-A1B     8.3B total / 1.5B active   (ungated)     judge  ← default
+#
+#   The JUDGE is SWAPPABLE via env JUDGE_MODEL (see its entry under `models:`):
+#     JUDGE_MODEL=liquid (default)  → LiquidAI/LFM2.5-8B-A1B   (ungated)
+#     JUDGE_MODEL=gemma             → google/gemma-4-E4B-it    (~8B w/ emb; GATED→HF_TOKEN)
+#   `setup.sh` pre-caches BOTH candidates (PREFETCH_JUDGES=1) so you can A/B them
+#   by just flipping JUDGE_MODEL and relaunching `SKIP_INSTALL=1 bash setup.sh`.
+#
+# ── COMPLIANCE (Submission Guide §6.3, read before your slot!) ───────────────
+#   • The committee limit is TOTAL params of all LLMs loaded at the SAME MOMENT
+#     ≤ 8B-class; MoE models count TOTAL params (Q2). The 3-model line-up below
+#     totals ≈ 17.4B resident — it does NOT meet a strict §6.3 reading. Running
+#     it is YOUR explicit call (that is what `max_resident_b: 18` acknowledges).
+#   • The committee may inspect GPU memory during the Public Test Day.
+#   • Strictly-compliant alternatives are kept commented at the bottom: the
+#     2×4B generator pair with a 4B arbitrating (Line-up A), or a single ≤8B
+#     model that self-judges (Line-ups B/C).
+#   • You CANNOT load/unload models per query: an 8B vLLM cold start is ~30-90s
+#     and every query has a ~60s timeout. One line-up stays resident all slot.
+#   • Gemma repos are GATED: accept the license on huggingface.co and
+#     `export HF_TOKEN=hf_xxx` before `bash setup.sh`.
+#
+# GPU sizing:
+#   • swap: true  (DEFAULT) — the two 4B generators stay co-resident (~18 GB) and
+#     the 8B judge is SLEPT/WOKEN per query (vLLM sleep mode). Peak VRAM is
+#     max(generators, judge) ≈ 18 GB, so the full 2×4B + 8B line-up runs on a
+#     24 GB card (4090 / 5070-class). Costs one sleep/wake swap per query
+#     (seconds — fine when timing is loose). Needs CPU RAM (~18 GB) to hold the
+#     slept weights, and vLLM's dev endpoints (run_server.sh sets that up).
+#   • swap: false — all three resident at once in bf16 want ~40+ GB; a 48 GB card
+#     (L40S / A6000) is comfortable, 24 GB is NOT enough. GPU_MEM_UTIL is then
+#     split across servers in proportion to params_b.
+#   • quantization (below) shrinks every model further — 4bit makes even the
+#     all-resident line-up fit ~12 GB.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Logic flow:
+#   arbiter — generators think → the judge rules → code builds the submission
+#             object. With no role tags: every model generates and the highest-
+#             weight one arbitrates; a single-model line-up makes two passes
+#             (strict + skeptical) and self-judges.
+#   vote    — the cascade's weighted soft vote (no judge).
+mode: arbiter
+
+# Sleep/wake swap (env SWAP overrides). When true (default) and the line-up has a
+# `judge` role + ≥1 generator, the generators stay co-resident and the 8B judge is
+# woken (generators slept) only for its arbitration call — peak VRAM = the larger
+# group, so the 2×4B + 8B line-up fits a 24 GB card. Set false to hold all models
+# resident (needs ~40 GB, or a small quant). Ignored outside `arbiter` mode.
+swap: true
+
+# Quantization for EVERY model (env QUANTIZATION overrides; a model may override
+# with its own `quantization:`). One of:
+#   none  — full precision bf16 (~2 B/param). Default.
+#   8bit  — online FP8 (~1 B/param). Needs an Ada/Hopper/Blackwell GPU (4090/5070);
+#           unsupported on Ampere (A100/3090).
+#   4bit  — bitsandbytes NF4 (~0.5 B/param). Needs the `bitsandbytes` package
+#           (serve/requirements.txt installs it). Smallest footprint.
+quantization: none
+
+# Thinking mode for the reasoning calls (env THINKING overrides; a model may
+# override with its own `thinking:`). true = the model emits a <think>…</think>
+# chain before its JSON verdict (better reasoning, slower); false = a direct
+# answer (faster, cleaner JSON). Default true. Helper JSON calls (premises_used,
+# option-pick fallback) are always no-think regardless.
+thinking: true
+
+# The residency budget the launch guard enforces (sum of params_b). The
+# committee's value is 8. Raising it is an explicit compliance decision — the
+# launcher will warn loudly. Env MAX_RESIDENT_B overrides.
+max_resident_b: 18
+
+# ── DEFAULT: the generate→judge line-up (2×4B juniors + Liquid 8B judge) ─────
+models:
+  - id: Qwen/Qwen3.5-4B
+    params_b: 4
+    weight: 1.0
+    role: generator
+    thinking: true                  # per-model override (omit to use the global)
+  - id: google/gemma-4-E2B-it       # GATED — needs HF_TOKEN
+    params_b: 5.1                   # total (2.3B effective)
+    weight: 1.0
+    role: generator
+    thinking: true
+  # ── SWAPPABLE JUDGE ──────────────────────────────────────────────────────
+  # Pick the judge for this slot with env JUDGE_MODEL (no code edit needed):
+  #   JUDGE_MODEL=liquid  (default) → LiquidAI/LFM2.5-8B-A1B  (MoE 8.3B total / 1.5B active; ungated)
+  #   JUDGE_MODEL=gemma             → google/gemma-4-E4B-it   (~8B with embeddings; GATED → needs HF_TOKEN)
+  #   JUDGE_MODEL=<any HF repo id>  → that exact repo (full ids pass through).
+  # JUDGE_PARAMS_B overrides the size the residency budget counts (default 8.3,
+  # a safe over-estimate that covers both candidates).
+  - id: ${JUDGE_MODEL:-LiquidAI/LFM2.5-8B-A1B}
+    params_b: ${JUDGE_PARAMS_B:-8.3}
+    weight: 1.5
+    role: judge
+    thinking: true                  # set false for a faster, direct verdict
+    # quantization: 8bit            # per-model quant override also works here
+
+# ── Line-up A (strict-8B): the two 4B juniors, strongest one arbitrates. ─────
+# Set max_resident_b: 8 and params_b to the effective counts (4 + 2.3 = 6.3B)
+# if your committee counts by class; 4 + 5.1 = 9.1B on strict total counting.
+# models:
+#   - id: Qwen/Qwen3.5-4B
+#     params_b: 4
+#     weight: 1.0
+#     role: generator
+#   - id: google/gemma-4-E2B-it     # GATED — needs HF_TOKEN
+#     params_b: 2.3
+#     weight: 1.0
+#     role: generator
+
+# ── Line-up B (strict-8B): single Liquid 8B — two passes + self-judge. ───────
+# models:
+#   - id: LiquidAI/LFM2.5-8B-A1B
+#     params_b: 8
+#     weight: 1.5
+#     role: judge
+
+# ── Line-up C (strict-8B): Qwen3.5-4B alone — ungated, zero ambiguity. ───────
+# models:
+#   - id: Qwen/Qwen3.5-4B
+#     params_b: 4
+#     weight: 1.5

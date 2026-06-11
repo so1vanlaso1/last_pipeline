@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exact-fama-qwen3-prototype"
+version = "0.2.0"
+description = "Solver-first EXACT-FAMA educational QA prototype with optional Qwen3-8B explanation rewrite"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "EXACT-FAMA Team" }
+]
+dependencies = [
+  "fastapi>=0.110",
+  "gradio>=4.0",
+  "uvicorn[standard]>=0.27",
+  "pydantic>=2.0",
+  "PyYAML>=6.0",
+  "requests>=2.31",
+  "numpy>=1.24",
+  "sympy>=1.12",
+  "z3-solver>=4.12",
+  "pandas>=2.0",
+  "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+]
+train = [
+  "transformers>=4.51",
+  "accelerate>=0.30",
+  "datasets>=2.18",
+  "peft>=0.11",
+  "bitsandbytes>=0.43",
+  "trl>=0.8",
+  "sentencepiece>=0.2",
+  "protobuf>=4.25",
+  "safetensors>=0.4",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

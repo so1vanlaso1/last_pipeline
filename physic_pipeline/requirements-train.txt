@@ -1,0 +1,13 @@
+-r requirements.txt
+# Install a CUDA-compatible PyTorch build separately when using NVIDIA GPU.
+# Example, adjust to your driver/CUDA stack:
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+transformers>=4.51
+accelerate>=0.30
+datasets>=2.18
+peft>=0.11
+bitsandbytes>=0.43
+trl>=0.8
+sentencepiece>=0.2
+protobuf>=4.25
+safetensors>=0.4

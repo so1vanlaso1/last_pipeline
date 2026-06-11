@@ -1,0 +1,28 @@
+# ── Cascade NL-QA pipeline requirements ──────────────────────────────────────
+# Install torch FIRST from the matching CUDA channel (setup.sh does this for you):
+#   pip install --index-url https://download.pytorch.org/whl/cu128 "torch>=2.7"
+# Then: pip install -r requirements.txt
+
+# Lightweight core — enough to load data, build prompts, write logs, and run the
+# --backend stub wiring test with NO GPU / NO torch.
+pyyaml>=6.0
+tqdm>=4.66
+
+# Model inference (GPU).
+torch>=2.7                 # cu128 wheels for Blackwell sm_120 (RTX 5070)
+transformers>=5.0          # LFM2.5 (liquid8b) needs >=5.0; also covers Qwen3.5 + Gemma 3n/4.
+                           # If you only run the 4b/gemma8b stages, transformers>=4.57 is enough.
+accelerate>=1.1            # device_map="auto" sharding / offload
+bitsandbytes>=0.44         # 4-bit (NF4) and 8-bit (int8) quantization
+sentencepiece>=0.2         # Gemma tokenizer
+protobuf>=4.0              # tokenizer .model → fast-tokenizer conversion
+huggingface_hub>=0.25      # model download (snapshot_download)
+safetensors>=0.4
+# Gemma 3n / Gemma "4" ship a multimodal stack; these are needed even for the
+# text-only path used here. Harmless for the Qwen text model.
+# NOTE: timm depends on torchvision. Do NOT add torchvision here — this file is
+# installed from the default PyPI index, which ships a torchvision built for a
+# different CUDA than our cu128 torch (→ load-time crash, 0% accuracy). setup.sh
+# installs torchvision from the matching CUDA channel before this file runs.
+timm>=1.0
+pillow>=10.0

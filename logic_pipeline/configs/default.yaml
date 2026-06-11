@@ -1,0 +1,50 @@
+# Reference knobs for the generate→judge pipeline. run_cascade.py reads its
+# settings from the CLI (this file documents the defaults / intent); copy values
+# onto the command line as needed.
+
+data: Logic_Based_Educational_Queries.json
+
+mode: judge               # judge (default) | vote  (--mode)
+
+models:
+  qwen:        Qwen/Qwen3.5-4B           # generator A (judge mode) / "4b" voter
+  gemma_small: google/gemma-4-E2B-it     # generator B (judge mode) / "4b" voter
+  liquid:      LiquidAI/LFM2.5-8B-A1B    # THE JUDGE (MoE 8.3B/1.5B active)
+  gemma_big:   google/gemma-4-E4B-it     # vote mode only (stage "gemma8b")
+  # If a Gemma repo 404s, use google/gemma-3n-E2B-it / google/gemma-3n-E4B-it.
+  # LFM2.5 needs transformers>=5.0 and always emits a chain of thought.
+
+judge_flow:
+  # Stage 1: both generators resident, queried CONCURRENTLY per record, thinking
+  # ON (--no-think to disable). Each ends its reply with one JSON object:
+  #   {"answer": ..., "premises_used": [1-based], "explanation": ...}
+  # Stage 2: generators unloaded, the Liquid 8B judge loads alone; it sees the
+  # original premises + question + both candidates (reference only) and rules:
+  #   {"chosen": 1|2, "answer": ..., "premises_used": [...], "explanation": ...}
+  # Finalize (deterministic code): judge's answer → judge's endorsed junior →
+  # generator agreement → first generator with an answer. The submission file
+  # (Result/*_submission.json, Section 4 schema) is always built by code.
+  think: true
+
+vote:
+  # Legacy --mode vote: each model adds its weight to the label it chose; the
+  # label with the most total weight wins. Line-up via --stages from
+  # {4b, gemma8b, liquid8b}.
+  select: 4b,gemma8b,liquid8b
+  weight_4b: 1.0
+  weight_8b: 1.5          # 8B vote is 1.5x a 4B vote (--weight-4b / --weight-8b)
+
+inference:
+  precision: 4bit         # 4bit | 8bit | bf16  (two 4B in bf16 will NOT fit 12 GB)
+  compute_dtype: bfloat16 # for the 4bit/8bit path; bfloat16 on Blackwell/Ampere
+  device_map: auto
+  max_new_tokens: 256     # auto-raised to >=1024 in judge mode (thinking + JSON)
+  temperature: 0.0        # greedy → reproducible answers
+
+logging:
+  # Four timestamped files per run, under Result/:
+  #   run_cascade_<stamp>.txt              per-record summary + accuracy
+  #   run_cascade_<stamp>_model_io.txt     every model call, prompt + raw output
+  #   run_cascade_<stamp>.json             machine-readable predictions
+  #   run_cascade_<stamp>_submission.json  competition Section 4 result list
+  dir: Result/

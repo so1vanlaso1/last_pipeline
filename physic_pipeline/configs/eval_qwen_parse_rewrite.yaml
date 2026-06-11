@@ -1,0 +1,17 @@
+model:
+  backend: ${LLM_BACKEND:hf}
+  name: ${MODEL_NAME:models/Qwen3-8B}
+  lora_adapter_path: ${LORA_ADAPTER_PATH:}
+  temperature: ${LLM_TEMPERATURE:0.0}
+  max_new_tokens: ${LLM_MAX_NEW_TOKENS:768}
+  load_in_4bit: true
+  vllm_base_url: ${VLLM_BASE_URL:http://localhost:8001/v1}
+
+pipeline:
+  use_llm_for_structured_parse: true
+  use_llm_for_explanation: true
+  require_json_schema: true
+  numeric_tolerance: 1.0e-6
+  # baseline: never use parser answer; same_answer_only: parser may improve trace only;
+  # safe_override: parser may help solver override only when validation passes and solver has proof.
+  parser_answer_policy: safe_override

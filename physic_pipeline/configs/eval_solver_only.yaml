@@ -1,0 +1,14 @@
+model:
+  backend: none
+  name: ${MODEL_NAME:models/Qwen3-8B}
+  lora_adapter_path: ${LORA_ADAPTER_PATH:}
+  temperature: 0.0
+  max_new_tokens: 512
+  load_in_4bit: true
+  vllm_base_url: ${VLLM_BASE_URL:http://localhost:8001/v1}
+
+pipeline:
+  use_llm_for_structured_parse: false
+  use_llm_for_explanation: false
+  require_json_schema: true
+  numeric_tolerance: 1.0e-6

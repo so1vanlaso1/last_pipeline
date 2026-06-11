@@ -1,0 +1,49 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments and local environment files
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Test, lint, type-check, and coverage caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Pipeline run outputs
+Result/
+*.log
+
+# Model, experiment, and generated artifact directories/files
+artifacts/
+data/
+runs/
+wandb/
+*.bin
+*.safetensors
+*.gguf
+*.ckpt
+*.pt
+*.pth
+*.onnx
+
+# Packaging/build outputs
+build/
+dist/
+*.egg-info/
+
+# Local editor and OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

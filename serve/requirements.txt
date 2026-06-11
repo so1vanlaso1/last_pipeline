@@ -1,0 +1,17 @@
+# Gateway + physics-pipeline runtime deps (NO torch here — vLLM installs the
+# matching CUDA torch). The logic side needs nothing extra: it reuses
+# logic_pipeline/src/{prompts,schema}.py which are pure stdlib (re + dataclasses).
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.0
+PyYAML>=6.0
+requests>=2.31
+numpy>=1.24
+sympy>=1.12
+z3-solver>=4.12
+pandas>=2.0
+python-dotenv>=1.0
+huggingface_hub>=0.25
+# Only needed when logic_config.yaml sets quantization: 4bit (bitsandbytes NF4).
+# Harmless otherwise; 8bit (fp8) and full precision need nothing extra.
+bitsandbytes>=0.43

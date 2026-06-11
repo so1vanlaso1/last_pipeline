@@ -1,0 +1,29 @@
+model:
+  backend: ${LLM_BACKEND:none}
+  name: ${MODEL_NAME:Qwen/Qwen3-8B}
+  lora_adapter_path: ${LORA_ADAPTER_PATH:}
+  temperature: ${LLM_TEMPERATURE:0.0}
+  max_new_tokens: ${LLM_MAX_NEW_TOKENS:512}
+  vllm_base_url: ${VLLM_BASE_URL:http://localhost:8001/v1}
+
+pipeline:
+  use_fama: true
+  use_llm_for_explanation: false
+  require_json_schema: true
+  numeric_tolerance: 1.0e-6
+
+fama:
+  enabled_error_types:
+    - ROUTING_ERROR
+    - LOGIC_PARSE_ERROR
+    - LOGIC_ENTAILMENT_ERROR
+    - PHYSICS_PARSE_ERROR
+    - PHYSICS_UNIT_ERROR
+    - PHYSICS_FORMULA_ERROR
+    - EXPLANATION_WEAK
+    - OUTPUT_SCHEMA_ERROR
+  helper_modules:
+    router_verifier: true
+    logic_verifier: true
+    physics_unit_verifier: true
+    output_validator: true

@@ -1,0 +1,84 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.conda/
+conda-env/
+
+# IDE / OS
+.vscode/*
+!.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets / local environment
+.env
+.env.*
+!.env.example
+
+models/*
+!models/.gitkeep
+!models/README.md
+
+# Extra protection for model files anywhere
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.gguf
+*.onnx
+*.tflite
+
+# # Datasets
+# data/external/
+# data/raw/
+# data/processed/
+# data/cache/
+
+# Keep sample data
+!data/
+!data/sample/
+!data/sample/**
+
+# Hugging Face dataset artifacts
+*.arrow
+dataset_info.json
+state.json
+dataset_dict.json
+
+# Training / inference outputs
+artifacts/
+outputs/
+runs/
+wandb/
+mlruns/
+checkpoints/
+logs/
+*.log
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Temp files
+tmp/
+temp/
+*.tmp
+*.bak

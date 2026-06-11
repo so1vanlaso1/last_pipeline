@@ -1,0 +1,170 @@
+from __future__ import annotations
+"""Physics canonicalization lexicon.
+
+This module is deliberately data-free: it contains no ids, answers, gold labels,
+or question lookup tables.  It only records general synonym groups that are safe
+for rewriting physics word problems into the deterministic solver's preferred
+language.
+"""
+from dataclasses import dataclass
+@dataclass(frozen=True)
+class QuantityLexeme:
+    canonical: str
+    symbols: tuple[str, ...]
+    aliases: tuple[str, ...]
+    units: tuple[str, ...]
+QUANTITY_LEXICON: dict[str, QuantityLexeme] = {
+    "capacitance": QuantityLexeme(
+        canonical="capacitance",
+        symbols=("C", "C1", "C2", "C3", "C4"),
+        aliases=("capacitance", "capacitor value", "cap", "capacitor with capacitance"),
+        units=("F", "mF", "microfarads", "microfarad", "μF", "µF", "uF", "nF", "pF"),
+    ),
+    "voltage": QuantityLexeme(
+        canonical="voltage",
+        symbols=("U", "V", "U1", "U2", "V1", "V2"),
+        aliases=(
+            "voltage", "potential difference", "terminal voltage", "supply voltage",
+            "applied voltage", "connected to", "maintained at", "across its terminals",
+            "across the plates", "rms voltage", "RMS voltage",
+        ),
+        units=("V", "volts", "volt", "mV", "kV"),
+    ),
+    "charge": QuantityLexeme(
+        canonical="charge",
+        symbols=("Q", "q", "q1", "q2", "q3", "q0"),
+        aliases=("charge", "electric charge", "point charge", "charge on a capacitor"),
+        units=("C", "mC", "microcoulombs", "microcoulomb", "μC", "µC", "uC", "nC", "pC"),
+    ),
+    "resistance": QuantityLexeme(
+        canonical="resistance",
+        symbols=("R", "R1", "R2", "R3", "R4", "R5", "R6"),
+        aliases=("resistance", "resistor", "ohmic resistance", "load resistance"),
+        units=("Ω", "ω", "ohm", "ohms", "kohm", "kΩ", "kω"),
+    ),
+    "current": QuantityLexeme(
+        canonical="current",
+        symbols=("I", "I0", "Imax"),
+        aliases=("current", "rms current", "current intensity", "electric current"),
+        units=("A", "mA"),
+    ),
+    "inductance": QuantityLexeme(
+        canonical="inductance",
+        symbols=("L",),
+        aliases=("inductance", "inductor", "inductor of", "self-inductance"),
+        units=("H", "mH", "μH", "µH", "uH"),
+    ),
+    "frequency": QuantityLexeme(
+        canonical="frequency",
+        symbols=("f", "f0"),
+        aliases=("frequency", "resonant frequency", "resonate at", "oscillator at", "f0"),
+        units=("Hz", "kHz"),
+    ),
+    "distance": QuantityLexeme(
+        canonical="distance",
+        symbols=("d", "r", "l"),
+        aliases=("distance", "separation", "gap", "length", "radius", "from", "away from"),
+        units=("m", "cm", "mm", "km"),
+    ),
+    "area": QuantityLexeme(
+        canonical="area",
+        symbols=("A", "S"),
+        aliases=("area", "plate area", "cross-sectional area", "surface area"),
+        units=("m^2", "m²", "m2", "cm^2", "cm²", "cm2", "mm^2", "mm²", "mm2"),
+    ),
+}
+TARGET_ALIASES: dict[str, tuple[str, ...]] = {
+    "capacitor_energy": (
+        "energy stored", "stored energy", "electric field energy", "maximum electric field energy",
+        "how much energy", "what is the energy", "determine w", "w = 1/2cv",
+    ),
+    "capacitor_charge": ("compute the capacitor charge", "how much charge", "find q", "charge stored"),
+    "capacitor_voltage": ("potential difference", "find u", "calculate u", "voltage across"),
+    "parallel_plate_field": ("e between them", "field between", "uniform electric field", "parallel plates"),
+    "lc_resonance_design": ("must resonate", "needs f0", "lc oscillator", "required capacitance", "inductance needed"),
+    "rlc_operating_point": ("series rlc", "power factor", "impedance", "reactance", "rms current"),
+    "point_charge_field": ("electric field is produced", "point charge", "dielectric constant"),
+    "solenoid": ("solenoid", "magnetic field", "self-inductance", "turns"),
+}
+CANONICAL_FAMILIES = {
+    "parallel_plate_electric_field",
+    "parallel_plate_capacitance",
+    "capacitor_energy_cv",
+    "capacitor_charge_cv",
+    "capacitor_voltage_q_over_c",
+    "series_capacitor_voltage_division",
+    "lc_required_capacitance",
+    "lc_required_inductance",
+    "point_charge_electric_field",
+    "point_charge_potential",
+    "series_rlc_operating_point",
+    "equivalent_resistance_series",
+    "equivalent_resistance_parallel",
+    "solenoid_magnetic_field",
+    "solenoid_self_inductance",
+    "battery_terminal_voltage",
+    "ohm_power_current_voltage",
+    "measurement_uncertainty",
+}
+OUTPUT_UNIT_ALIASES = {
+    "joules": "J",
+    "joule": "J",
+    "j": "J",
+    "millijoules": "mJ",
+    "millijoule": "mJ",
+    "mj": "mJ",
+    "microjoules": "μJ",
+    "microjoule": "μJ",
+    "μj": "μJ",
+    "µj": "μJ",
+    "uj": "μJ",
+    "coulombs": "C",
+    "coulomb": "C",
+    "c": "C",
+    "millicoulombs": "mC",
+    "millicoulomb": "mC",
+    "mc": "mC",
+    "microcoulombs": "μC",
+    "microcoulomb": "μC",
+    "μc": "μC",
+    "µc": "μC",
+    "uc": "μC",
+    "volts": "V",
+    "volt": "V",
+    "v": "V",
+    "ohms": "Ω",
+    "ohm": "Ω",
+    "ω": "Ω",
+    "hz": "Hz",
+    "khz": "kHz",
+    "henries": "H",
+    "henry": "H",
+    "h": "H",
+    "millihenries": "mH",
+    "millihenry": "mH",
+    "mh": "mH",
+    "microhenries": "μH",
+    "microhenry": "μH",
+    "μh": "μH",
+    "µh": "μH",
+    "uh": "μH",
+    "farads": "F",
+    "farad": "F",
+    "f": "F",
+    "microfarads": "μF",
+    "microfarad": "μF",
+    "μf": "μF",
+    "µf": "μF",
+    "uf": "μF",
+    "nanofarads": "nF",
+    "nanofarad": "nF",
+    "nf": "nF",
+    "picofarads": "pF",
+    "picofarad": "pF",
+    "pf": "pF",
+    "v/m": "V/m",
+    "n/c": "N/C",
+    "j/m3": "J/m^3",
+    "j/m^3": "J/m^3",
+    "j/m³": "J/m^3",
+}
