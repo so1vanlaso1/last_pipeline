@@ -19,18 +19,19 @@
 #     bash serve/stop.sh
 #
 # Overridable env vars (sensible defaults shown):
-#   MODEL_ID=LiquidAI/LFM2.5-8B-A1B  # fallback single LLM if logic_config.yaml is absent
-#   JUDGE_MODEL=liquid          # swap the Type-1 JUDGE: 'liquid'(default)|'gemma'|<full HF repo id>
-#   JUDGE_PARAMS_B=8.3          # size the residency budget counts for the judge (default 8.3)
-#   PREFETCH_JUDGES=1           # 1=pre-download BOTH judge candidates (liquid+gemma) for fast A/B
+#   MODEL_ID=google/gemma-4-E4B-it  # fallback single LLM if logic_config.yaml is absent
+#   JUDGE_MODEL=google/gemma-4-E4B-it  # the Type-1 JUDGE repo (default Gemma-4-E4B; any HF id)
+#   JUDGE_PARAMS_B=8            # size the residency budget counts for the judge (default 8)
+#   VLLM_VERSION=0.19.1         # pinned CUDA-12 vLLM (works on drivers up to CUDA 12.9). On a
+#                               # CUDA-13 box (driver >= 580) set a newer version or 'latest'.
 #   VLLM_PORT=8001              # vLLM OpenAI server port (internal)
 #   GATEWAY_PORT=8000           # gateway /predict port (internal)
 #   MAX_MODEL_LEN=8192          # vLLM context length
 #   GPU_MEM_UTIL=0.90           # vLLM GPU memory fraction
+#   QUANTIZATION=none           # precision for every model: none(bf16) | 8bit | 4bit
 #   CF_TUNNEL=1                 # 1=auto Cloudflare tunnel for a public URL; 0=off
 #   PHYSICS_LLM_FALLBACK=1      # 1=LLM fills physics answers only when the solver abstains
-#   HF_TOKEN=                   # only needed if you switch MODEL_ID to a gated repo
-#   VLLM_VERSION=               # pin a vLLM version (e.g. one built for your driver's CUDA); empty=latest
+#   HF_TOKEN=                   # OPTIONAL — the default line-up (Qwen + Gemma-4) is ungated
 #   SKIP_INSTALL=0              # 1=skip pip install (just (re)launch the servers)
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -43,7 +44,10 @@ export PYTHONIOENCODING=utf-8
 export PYTHONUTF8=1
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-0}"
 
-MODEL_ID="${MODEL_ID:-LiquidAI/LFM2.5-8B-A1B}"
+MODEL_ID="${MODEL_ID:-google/gemma-4-E4B-it}"
+# Pin a CUDA-12 vLLM by default so a driver up to CUDA 12.9 works out of the box.
+# Override (e.g. VLLM_VERSION= for latest) on a CUDA-13 box (driver >= 580).
+VLLM_VERSION="${VLLM_VERSION:-0.19.1}"
 SKIP_INSTALL="${SKIP_INSTALL:-0}"
 
 echo "=================================================================="
@@ -87,11 +91,9 @@ if [ "$SKIP_INSTALL" != "1" ]; then
     # vLLM ships ONE CUDA build per release and pulls its OWN matching torch, so we
     # install them together as a consistent stack. Do NOT swap only torch's CUDA:
     # vLLM's compiled extension (vllm._C) would then mismatch
-    # (ImportError: libcudart.so.<N>). A recent vLLM is a CUDA-13 build and needs a
-    # driver new enough for it — check `nvidia-smi` "CUDA Version" >= the wheel's
-    # CUDA. If your box's driver is older (e.g. CUDA 12.x), either use a newer-driver
-    # box or pin an older VLLM_VERSION whose wheel targets your driver's CUDA (note:
-    # very new models may not be supported by older vLLM).
+    # (ImportError: libcudart.so.<N>). VLLM_VERSION defaults to 0.19.1 — a CUDA-12
+    # build that runs on drivers up to CUDA 12.9 and supports the Qwen3.5 + Gemma-4
+    # line-up. On a CUDA-13 box (driver >= 580) set VLLM_VERSION= (empty) for latest.
     echo "== Installing vLLM (+ its matching torch; can take a while) =="
     if [ -n "${VLLM_VERSION:-}" ]; then
         pip install "vllm==${VLLM_VERSION}"
@@ -111,34 +113,6 @@ sys.exit(0 if torch.cuda.is_available() else 1)
 PY
 else
     echo "== SKIP_INSTALL=1 → skipping pip install =="
-fi
-
-# ── 4b. Pre-cache the swappable JUDGE candidates ─────────────────────────────
-#   The ACTIVE judge (env JUDGE_MODEL, default Liquid) is fetched at launch by
-#   run_server.sh anyway; this pre-pulls the OTHER candidate too, so you can flip
-#   JUDGE_MODEL and relaunch (SKIP_INSTALL=1 bash setup.sh) with no 30-min wait.
-#   Gated repos (Gemma) are skipped with a hint unless HF_TOKEN is set.
-#   Disable with PREFETCH_JUDGES=0; customise the list with JUDGE_CANDIDATES.
-PREFETCH_JUDGES="${PREFETCH_JUDGES:-1}"
-JUDGE_CANDIDATES="${JUDGE_CANDIDATES:-LiquidAI/LFM2.5-8B-A1B google/gemma-4-E4B-it}"
-if [ "$PREFETCH_JUDGES" = "1" ]; then
-    echo "== Pre-caching judge candidates: ${JUDGE_CANDIDATES} =="
-    for MID in $JUDGE_CANDIDATES; do
-        case "$MID" in
-            google/*|*gemma*)
-                if [ -z "${HF_TOKEN:-}" ]; then
-                    echo "[setup] skip ${MID} — gated; accept its license on huggingface.co and 'export HF_TOKEN=hf_...' to pre-cache it."
-                    continue
-                fi ;;
-        esac
-        echo "[setup] downloading ${MID} (if not already cached)…"
-        HF_TOKEN="${HF_TOKEN:-}" python - "$MID" <<'PY' || echo "[setup] ${MID}: prefetch skipped (vLLM will fetch it at launch)."
-import os, sys
-from huggingface_hub import snapshot_download
-snapshot_download(repo_id=sys.argv[1], token=os.environ.get("HF_TOKEN") or None)
-print("  cached:", sys.argv[1])
-PY
-    done
 fi
 
 # ── 5. The resident model line-up is read from serve/logic_config.yaml and each

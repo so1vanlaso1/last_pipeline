@@ -22,6 +22,10 @@ CF_TUNNEL="${CF_TUNNEL:-1}"
 export VLLM_BASE_PORT GPU_MEM_UTIL
 export GATEWAY_LLM="${GATEWAY_LLM:-vllm}"
 export PHYSICS_LLM_FALLBACK="${PHYSICS_LLM_FALLBACK:-1}"
+# Disk swap by default: level 2 = discard slept weights + reload from disk on wake
+# (nothing parked in CPU RAM). Set 1 for the RAM-offload swap. Shared by the gateway
+# residency manager and the sleep_server() curl below.
+export RESIDENCY_SLEEP_LEVEL="${RESIDENCY_SLEEP_LEVEL:-2}"
 export PYTHONPATH="$HERE:$ROOT/physic_pipeline/src:$ROOT/logic_pipeline/src${PYTHONPATH:+:$PYTHONPATH}"
 
 if [ -d "$ROOT/.venv" ]; then
@@ -61,11 +65,8 @@ server_up() { curl -fsS "http://localhost:$1/v1/models" >/dev/null 2>&1; }
 
 download_model() {
     local MID="$1"
-    case "$MID" in
-        google/*|*gemma*)
-            [ -z "${HF_TOKEN:-}" ] && echo "[run] WARNING: ${MID} is gated and HF_TOKEN is not set — accept the license on huggingface.co and 'export HF_TOKEN=hf_...'." >&2
-            ;;
-    esac
+    # The default line-up (Qwen3.5 + Gemma-4) is ungated — no HF_TOKEN needed. If you
+    # point at a gated repo, just `export HF_TOKEN=hf_...` and it is passed through.
     echo "[run] downloading ${MID} (if not cached)…"
     HF_TOKEN="${HF_TOKEN:-}" python - "$MID" <<'PY' || echo "[run] (download will fall back to vLLM's own fetch)"
 import os, sys
@@ -105,14 +106,22 @@ start_one() {                                    # MID PORT FRAC QUANT
 
 wait_ready() {                                   # PORT MAX_SECS  -> 0 if up
     local PORT="$1" SECS="$2"
+    local pidfile="$LOGDIR/vllm_${PORT}.pid" pid
     for _ in $(seq 1 "$SECS"); do
         if server_up "$PORT"; then return 0; fi
+        # Quick-fail: if the vLLM process has already exited, stop waiting now
+        # instead of polling a dead port for the full timeout.
+        pid="$(cat "$pidfile" 2>/dev/null || true)"
+        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+            echo "[run] vLLM for :${PORT} (pid $pid) exited early — see $LOGDIR/vllm_${PORT}.log" >&2
+            return 1
+        fi
         sleep 1
     done
     return 1
 }
 
-sleep_server() { curl -fsS -X POST "http://localhost:$1/sleep?level=${RESIDENCY_SLEEP_LEVEL:-1}" >/dev/null 2>&1 || true; }
+sleep_server() { curl -fsS -X POST "http://localhost:$1/sleep?level=${RESIDENCY_SLEEP_LEVEL:-2}" >/dev/null 2>&1 || true; }
 
 # ── 1. Launch the vLLM servers ───────────────────────────────────────────────
 GEN_PORTS=()

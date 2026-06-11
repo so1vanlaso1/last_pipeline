@@ -41,14 +41,11 @@ def _num(value: Any, default: float) -> float:
         return float(default)
 
 
-# Friendly shortcuts for the swappable Type-1 JUDGE. Set env JUDGE_MODEL to one of
-# these keys (or to any full HF repo id, which passes through unchanged) and the
-# judge entry in logic_config.yaml — `id: ${JUDGE_MODEL:-LiquidAI/LFM2.5-8B-A1B}`
-# — resolves to the repo below. Keys are matched case-insensitively.
+# Friendly shortcuts for the Type-1 JUDGE. Set env JUDGE_MODEL to one of these keys
+# (or to any full HF repo id, which passes through unchanged) and the judge entry in
+# logic_config.yaml — `id: ${JUDGE_MODEL:-google/gemma-4-E4B-it}` — resolves to the
+# repo below. Keys are matched case-insensitively.
 _MODEL_ALIASES: Dict[str, str] = {
-    "liquid":    "LiquidAI/LFM2.5-8B-A1B",
-    "lfm":       "LiquidAI/LFM2.5-8B-A1B",
-    "lfm2.5":    "LiquidAI/LFM2.5-8B-A1B",
     "gemma":     "google/gemma-4-E4B-it",
     "gemma-e4b": "google/gemma-4-E4B-it",
     "gemma4":    "google/gemma-4-E4B-it",
@@ -139,12 +136,12 @@ def load_thinking_global() -> bool:
 def load_models() -> List[Dict[str, Any]]:
     """Return the resident model list with assigned ports + base URLs.
 
-    Falls back to a single judge-class model (env MODEL_ID, default the Liquid
-    8B) if the config file is absent or empty.
+    Falls back to a single judge-class model (env MODEL_ID, default Gemma-4-E4B)
+    if the config file is absent or empty.
     """
     raw = list(_read_yaml().get("models") or [])
     if not raw:
-        raw = [{"id": os.environ.get("MODEL_ID", "LiquidAI/LFM2.5-8B-A1B"),
+        raw = [{"id": os.environ.get("MODEL_ID", "google/gemma-4-E4B-it"),
                 "params_b": 8, "weight": 1.5, "role": "judge"}]
 
     g_quant = load_quant_global()
@@ -154,7 +151,7 @@ def load_models() -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for i, m in enumerate(raw):
         mid = _expand(m.get("id", "")).strip()
-        mid = _MODEL_ALIASES.get(mid.lower(), mid)   # 'liquid'/'gemma' shortcuts -> repo id
+        mid = _MODEL_ALIASES.get(mid.lower(), mid)   # 'gemma' shortcut -> repo id
         if not mid:
             continue
         params_b = _num(m.get("params_b"), 8)
@@ -162,6 +159,12 @@ def load_models() -> List[Dict[str, Any]]:
         # Per-model `quantization:` / `thinking:` override the global defaults.
         quant = _norm_quant(m["quantization"]) if m.get("quantization") is not None else g_quant
         thinking = _truthy(m["thinking"]) if m.get("thinking") is not None else g_think
+        # Optional per-model `gpu_memory_utilization:` (0–1) pins this server's vLLM
+        # --gpu-memory-utilization instead of the auto split; ignored if out of range.
+        gmu = m.get("gpu_memory_utilization")
+        gmu = _num(gmu, 0.0) if gmu is not None else None
+        if gmu is not None and not (0.0 < gmu <= 1.0):
+            gmu = None
         out.append({
             "id": mid,
             "params_b": params_b,
@@ -170,6 +173,7 @@ def load_models() -> List[Dict[str, Any]]:
             "role": str(m.get("role", "")).strip().lower(),   # "generator"|"judge"|""
             "quant": quant,                                   # "none"|"4bit"|"8bit"|...
             "thinking": thinking,                             # reasoning-call think mode
+            "gpu_mem_util": gmu,                              # explicit override or None
             "port": port,
             "base_url": f"http://{host}:{port}/v1",
         })
@@ -241,16 +245,27 @@ def gpu_fractions(models: List[Dict[str, Any]]) -> List[float]:
 
     Non-swap line-up: every model is resident simultaneously, so the budget is
     split across all of them in proportion to parameter count (the old behaviour).
-    A 0.05 floor keeps a tiny model loadable."""
+    A 0.05 floor keeps a tiny model loadable.
+
+    A per-model `gpu_memory_utilization:` in the yaml (carried as `gpu_mem_util`)
+    pins that server's fraction verbatim and bypasses the auto split for it."""
     total = float(os.environ.get("GPU_MEM_UTIL", "0.90"))
     if not models:
         return []
+
+    def _pinned(m: Dict[str, Any]) -> float | None:
+        v = m.get("gpu_mem_util")
+        return round(float(v), 4) if v is not None else None
+
     if swap_active(models):
         gens = [m for m in models if m.get("role") != "judge"]
         gen_sum = sum(max(float(m["params_b"]), 0.5) for m in gens) or 1.0
         out: List[float] = []
         for m in models:
-            if m.get("role") == "judge":
+            pin = _pinned(m)
+            if pin is not None:
+                out.append(pin)                                   # explicit override
+            elif m.get("role") == "judge":
                 out.append(round(total, 4))                       # alone on the card
             else:
                 w = max(float(m["params_b"]), 0.5)
@@ -258,7 +273,10 @@ def gpu_fractions(models: List[Dict[str, Any]]) -> List[float]:
         return out
     weights = [max(float(m["params_b"]), 0.5) for m in models]
     s = sum(weights)
-    return [round(max(total * w / s, 0.05), 4) for w in weights]
+    return [
+        _pinned(m) if _pinned(m) is not None else round(max(total * w / s, 0.05), 4)
+        for m, w in zip(models, weights)
+    ]
 
 
 def print_launch_plan() -> None:

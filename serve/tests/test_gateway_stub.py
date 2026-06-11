@@ -151,17 +151,17 @@ def _stub(model: str, weight: float, cls: str, role: str = ""):
 
 
 def test_split_lineup_uses_role_tags():
-    """The role-tagged line-up: the two generators generate, the Liquid 8B judges."""
+    """The role-tagged line-up: the two generators generate, the Gemma-4 8B judges."""
     from gateway.logic_adapter import split_lineup
 
     judges = [
         _stub("qwen-4b", 1.0, "4b", "generator"),
         _stub("gemma-e2b", 1.0, "4b", "generator"),
-        _stub("liquid-8b-judge", 1.5, "8b", "judge"),
+        _stub("gemma-8b-judge", 1.5, "8b", "judge"),
     ]
     gens, arbiter = split_lineup(judges)
     assert [g.model for g in gens] == ["qwen-4b", "gemma-e2b"]
-    assert arbiter.model == "liquid-8b-judge"
+    assert arbiter.model == "gemma-8b-judge"
 
 
 def test_split_lineup_without_roles_keeps_old_rule():
@@ -174,7 +174,7 @@ def test_split_lineup_without_roles_keeps_old_rule():
     assert arbiter.model == "b-8b"
 
 
-def test_arbiter_generators_plus_liquid_judge(monkeypatch):
+def test_arbiter_generators_plus_gemma_judge(monkeypatch):
     """The full generate→judge flow over the 3-model role line-up."""
     monkeypatch.setenv("LOGIC_MODE", "arbiter")
     from gateway.logic_adapter import answer_type1
@@ -183,7 +183,7 @@ def test_arbiter_generators_plus_liquid_judge(monkeypatch):
     judges = [
         _stub("qwen-4b", 1.0, "4b", "generator"),
         _stub("gemma-e2b", 1.0, "4b", "generator"),
-        _stub("liquid-8b-judge", 1.5, "8b", "judge"),
+        _stub("gemma-8b-judge", 1.5, "8b", "judge"),
     ]
     q = PredictQuery(query_id="J1", type="type1", query="Entailed?",
                      premises=["All A are B.", "x is A."], options=["Yes", "No", "Uncertain"])
@@ -201,12 +201,12 @@ def test_config_lineup_roles_and_budget():
     # The line-up must fit the configured residency budget (the launch guard).
     assert config.total_params_b(models) <= config.max_resident_b() + 1e-9
     # The default config is the generate→judge design: 2 generators + the
-    # Liquid 8B judge.
+    # Gemma-4 8B judge.
     roles = [m["role"] for m in models]
     assert roles.count("generator") == 2
     assert roles.count("judge") == 1
     judge = next(m for m in models if m["role"] == "judge")
-    assert judge["id"] == "LiquidAI/LFM2.5-8B-A1B"
+    assert judge["id"] == "google/gemma-4-E4B-it"
 
 
 def test_batch_list_input():

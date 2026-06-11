@@ -240,7 +240,7 @@ def _free_form(client: LLMClient, q: PredictQuery) -> PredictResult:
 # Stage 1: the GENERATOR models (role "generator"; the two thinking 4B juniors —
 # Qwen3.5-4B + Gemma-4-E2B) answer CONCURRENTLY, each emitting {answer,
 # premises_used, explanation}. Stage 2: the JUDGE model (role "judge"; the
-# Liquid LFM2.5-8B-A1B) inspects the original premises + question plus both
+# Gemma-4-E4B 8B) inspects the original premises + question plus both
 # candidates (reference only) and decides the truly correct answer, RE-DERIVING
 # premises_used + explanation itself. The submission object is then assembled by
 # deterministic code (canonicalize → exact option mapping → PredictResult).
@@ -454,7 +454,7 @@ def split_lineup(judges: List[Judge]) -> Tuple[List[LLMClient], LLMClient]:
     """(generator clients, the judge client) from the resident line-up.
 
     Role-tagged line-ups are explicit: role "generator" models generate, the
-    role "judge" model (the Liquid 8B) arbitrates. Without roles, the old rule
+    role "judge" model (the Gemma-4 8B) arbitrates. Without roles, the old rule
     applies — everything generates and the highest-weight model arbitrates."""
     gens = [j[0] for j in judges if _role(j) == "generator"]
     tagged = [j[0] for j in judges if _role(j) == "judge"]

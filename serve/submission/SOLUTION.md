@@ -60,8 +60,8 @@ submit, the parameters loaded and running at any single moment stay within 8B.
 | Line-up | Models loaded & running | Params (effective / total) | Type 1 |
 |---|---|---|---|
 | **Two-judge vote** (default) | `Qwen/Qwen3.5-4B` + `google/gemma-4-E2B-it` | 4B + 2.3B = 6.3B eff (9.1B w/ embeddings) | cascade weighted vote |
+| **Gen→judge (default)** | `Qwen/Qwen3.5-4B` + `google/gemma-4-E2B-it` + `google/gemma-4-E4B-it` (judge) | disk swap → peak ~9.1B on GPU | generate→judge |
 | **Single Gemma-4-E4B** | `google/gemma-4-E4B-it` | 4.5B eff / **8B total** | single model |
-| **Single LFM2.5-8B** | `LiquidAI/LFM2.5-8B-A1B` | 1.5B active / 8.3B total | single model |
 | **Single Qwen3.5-4B** | `Qwen/Qwen3.5-4B` | 4B / 4B | single model |
 
 All four are open-source and served via vLLM. Non-LLM tools (the deterministic
@@ -70,9 +70,9 @@ don't count (Section 6.3). The launcher refuses to start a line-up over the limi
 
 > State your parameter-counting convention explicitly. For the Gemma "E" models,
 > Google reports both an **effective** count and a **with-embeddings** total
-> (E2B = 2.3B / 5.1B; E4B = 4.5B / 8B); for the LFM2.5 MoE, total = 8.3B / active
-> 1.5B. The two-judge vote is within 8B by the effective/by-class reading (the
-> guide's "two 4B = 8B" framing); `gemma-4-E4B-it` alone is ≤ 8B by the strict
+> (E2B = 2.3B / 5.1B; E4B = 4.5B / 8B). The default generate→judge line-up uses
+> **disk swap** (vLLM sleep level 2) so only one group is on the GPU at a time —
+> peak ~9.1B (the two generators); `gemma-4-E4B-it` alone is ≤ 8B by the strict
 > with-embeddings total.
 
 `GET /v1/models` reports every resident model, matching what is declared here.

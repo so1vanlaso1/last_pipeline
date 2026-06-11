@@ -9,12 +9,14 @@ weights fit) and SWAP the 8B JUDGE in only for its arbitration call:
     judge() context exited   -> generators AWAKE,  judge ASLEEP  (back to resting)
 
 so peak GPU usage is max(generators, judge) ~17 GB, not their sum. The swap uses
-vLLM's sleep mode (level 1: weights offload to CPU RAM, KV cache freed; wake_up
-restores them in a few seconds — far cheaper than a cold start). Both servers must
-be launched with `--enable-sleep-mode`, and run_server.sh sets VLLM_SERVER_DEV_MODE=1
-so the /sleep and /wake_up admin endpoints exist. run_server.sh also leaves the
-line-up in the resting state (judge slept right after it loads), which this
-manager assumes on startup.
+vLLM's sleep mode. DEFAULT is level 2 (RESIDENCY_SLEEP_LEVEL=2): the slept group's
+weights are DISCARDED — freed from the GPU *and* CPU RAM — and RELOADED FROM DISK on
+wake (a few seconds, still far cheaper than a process cold start). Set
+RESIDENCY_SLEEP_LEVEL=1 for the faster RAM-offload swap (weights parked in CPU RAM).
+Both servers must be launched with `--enable-sleep-mode`, and run_server.sh sets
+VLLM_SERVER_DEV_MODE=1 so the /sleep and /wake_up admin endpoints exist. run_server.sh
+also leaves the line-up in the resting state (judge slept right after it loads),
+which this manager assumes on startup.
 
 Discipline that keeps the 24 GB card from OOMing: a group is only ever woken once
 the other group is asleep (sleep-before-wake), and a process-wide lock serialises
@@ -42,7 +44,9 @@ log = logging.getLogger("gateway.residency")
 # Sleep/wake are blocking on the vLLM side; give them generous headroom (a cold
 # wake from CPU offload is seconds, not minutes, but the first one can recompile).
 _OP_TIMEOUT = float(os.environ.get("RESIDENCY_OP_TIMEOUT", "180"))
-_SLEEP_LEVEL = int(os.environ.get("RESIDENCY_SLEEP_LEVEL", "1"))
+# Level 2 (default): discard slept weights, reload from disk on wake (nothing parked
+# in CPU RAM). Level 1: offload to CPU RAM (faster wake, weights stay resident in RAM).
+_SLEEP_LEVEL = int(os.environ.get("RESIDENCY_SLEEP_LEVEL", "2"))
 
 
 def _root(base_url: str) -> str:

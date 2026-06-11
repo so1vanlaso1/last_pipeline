@@ -11,7 +11,7 @@ endpoint**, served via **vLLM**, with one setup script for vast.ai.
         ├── type1 → generate→judge flow over the resident vLLM line-up:
         │     Qwen3.5-4B  ┐ concurrent thinking generators
         │     Gemma-4-E2B ┘   {answer, premises_used, explanation}
-        │     LFM2.5-8B-A1B   the judge: rules on the candidates
+        │     Gemma-4-E4B    the judge (thinking): rules on the candidates
         │     → deterministic code builds the result object
         ├── type2 → physic_pipeline ExactFamaPipeline (first model's vLLM)
         └── GET /v1/models ── aggregates every resident server's model list
@@ -27,9 +27,9 @@ endpoint**, served via **vLLM**, with one setup script for vast.ai.
   must end its reply with `{"answer", "premises_used", "explanation"}` (the
   **last** balanced JSON object is parsed, so reasoning prose can't shadow it).
 - **Stage 2 — the judge.** The `role: judge` model (default:
-  `LiquidAI/LFM2.5-8B-A1B`) receives the original premises + question plus both
-  candidates (marked *reference only*), decides the truly correct answer, and
-  re-derives `premises_used` + the explanation in its own words.
+  `google/gemma-4-E4B-it`, ~8B, thinking on) receives the original premises +
+  question plus both candidates (marked *reference only*), decides the truly
+  correct answer, and re-derives `premises_used` + the explanation in its own words.
 - **Deterministic output.** Code — never the model — maps the canonical answer
   onto the exact option text, clamps `premises_used` to valid 0-based indices,
   and assembles the Section 4 result object. Fallbacks (judge unparseable →
@@ -41,14 +41,14 @@ pass and self-judges). `mode: vote` switches to the cascade's weighted soft vote
 
 ## Compliance warning (read before your slot)
 
-The default 3-model line-up totals **≈ 17.4B params resident** (committee counts
-MoE by TOTAL params, Submission Guide §6.3/Q2) — that is **over the 8B-at-any-
-moment limit** on a strict reading. `max_resident_b: 18` in the yaml is the
-explicit acknowledgement that launches it anyway; the launcher and gateway log
-loud warnings. Strictly-compliant line-ups (2×4B, or one ≤8B model that
-self-judges) are kept commented in `serve/logic_config.yaml` — switching back is
-a 30-second edit. Per-query load/unload is not an option (an 8B vLLM cold start
-is ~30–90 s vs the ~60 s query timeout).
+The default 3-model line-up totals **≈ 17.1B params** (committee counts by TOTAL
+params, Submission Guide §6.3/Q2). With **disk swap** (sleep level 2) only one
+group is ever loaded at a time, so peak GPU is **~9.1B** (the two generators);
+`max_resident_b: 18` is the explicit acknowledgement that launches it, and the
+launcher/gateway log warnings over 8B. Strictly-compliant line-ups (2×4B, or one
+≤8B model that self-judges) are kept commented in `serve/logic_config.yaml` —
+switching is a 30-second edit. The swap reloads weights from disk per query (a few
+seconds), which is fine within the ~60 s timeout.
 
 ## Run it (vast.ai)
 
@@ -61,16 +61,17 @@ The public URLs are written to `serve/submission/urls.txt`. Stop with
 
 GPU sizing for the default line-up:
 
-* **`swap: true` (default)** — the two 4B generators stay co-resident and the 8B
-  judge is **slept/woken per query** (vLLM sleep mode), so peak VRAM is
-  `max(generators, judge) ≈ 18 GB` and the whole line-up **fits a 24 GB card**
-  (4090 / 5070-class). Costs one sleep/wake swap per query (seconds). The judge
-  boots first (alone, full card) and is slept immediately so the generators load
-  into the freed memory; needs ~18 GB CPU RAM to hold the slept weights, and
-  `VLLM_SERVER_DEV_MODE=1` (run_server.sh sets it) for the `/sleep` `/wake_up`
-  endpoints.
-* **`swap: false`** — all three resident at once: ~40+ GB total (4B ≈ 8 G +
-  5.1B ≈ 11 G + 8.3B ≈ 17 G + KV caches), so a 48 GB card. `GPU_MEM_UTIL` is then
+* **`swap: true` (default) — disk unload/reload.** The two 4B generators stay
+  co-resident and the 8B judge is **swapped in per query** via vLLM **sleep level 2**:
+  the inactive group's weights are **discarded (freed from GPU *and* RAM) and
+  reloaded from disk on wake** (a few seconds — nothing parked in CPU RAM). Peak GPU
+  is `max(generators, judge) ≈ 9.1B params`, so the line-up **fits a 24 GB card**
+  (4090 / 5070-class). The judge boots first (alone, full card) and is slept so the
+  generators load into the freed memory; `VLLM_SERVER_DEV_MODE=1` (run_server.sh
+  sets it) enables the `/sleep` `/wake_up` endpoints. `RESIDENCY_SLEEP_LEVEL=1`
+  switches to the faster RAM-offload swap.
+* **`swap: false`** — all three resident at once: ~40+ GB total in bf16 (4B ≈ 8 G +
+  5.1B ≈ 11 G + 8B ≈ 16 G + KV caches), so a 48 GB card. `GPU_MEM_UTIL` is then
   split across the servers in proportion to each model's `params_b`.
 * **`quantization: none | 8bit | 4bit`** (yaml or env `QUANTIZATION`, per-model
   override allowed) shrinks every model: `8bit` = online FP8 (~half VRAM, needs
@@ -82,8 +83,9 @@ GPU sizing for the default line-up:
 `setup.sh` launches **one vLLM server per model** listed there (each with its
 own `/v1/models`), downloads only those models, and **refuses to start if the
 total exceeds `max_resident_b`** (default 8; the shipped config raises it to 18
-explicitly — see the compliance warning above). Gated Gemma repos need
-`HF_TOKEN`. Each model takes `role: generator | judge` (Type 1 flow) plus
+explicitly — see the compliance warning above). The default line-up (Qwen3.5 +
+Gemma-4) is **ungated** — no `HF_TOKEN` needed. Each model takes
+`role: generator | judge` (Type 1 flow) plus
 `params_b` and a vote `weight` (used by `mode: vote`). Each model also takes an
 optional `quantization:` and `thinking:` (true/false) that override the global
 `quantization:` / `thinking:` defaults — so you can, e.g., run the generators in
@@ -98,11 +100,12 @@ verdict. Helper JSON calls (premises_used, option pick) are always no-think.
 | `LOGIC_MODE` | (yaml `mode:`, default `arbiter`) | `arbiter` (generate→judge) or `vote` |
 | `LOGIC_THINK_TOKENS` | `1024` | max tokens per thinking generate/judge call |
 | `MAX_RESIDENT_B` | (yaml `max_resident_b:`, default 8) | residency budget the launch guard enforces |
-| `SWAP` | (yaml `swap:`, default `true`) | sleep/wake-swap the judge instead of holding it resident (24 GB-friendly) |
-| `QUANTIZATION` | (yaml `quantization:`, default `none`) | `none` / `8bit` (fp8) / `4bit` (bnb NF4) for every model |
+| `SWAP` | (yaml `swap:`, default `true`) | disk-swap the judge per query instead of holding it resident (24 GB-friendly) |
+| `RESIDENCY_SLEEP_LEVEL` | `2` | `2` = discard slept weights + reload from disk (nothing in RAM); `1` = offload to CPU RAM |
+| `QUANTIZATION` | (yaml `quantization:`, default `none`) | `none`(bf16) / `8bit` (fp8) / `4bit` (bnb NF4) for every model |
 | `THINKING` | (yaml `thinking:`, default `true`) | reasoning-call think mode for every model (per-model `thinking:` overrides) |
-| `RESIDENCY_SLEEP_LEVEL` | `1` | vLLM sleep level (1 = offload weights to CPU RAM, fast wake) |
-| `MODEL_ID` | `LiquidAI/LFM2.5-8B-A1B` | fallback single model if the yaml is absent |
+| `VLLM_VERSION` | `0.19.1` | pinned CUDA-12 vLLM (drivers ≤ CUDA 12.9); set empty for latest on CUDA-13 |
+| `MODEL_ID` | `google/gemma-4-E4B-it` | fallback single model if the yaml is absent |
 | `VLLM_BASE_PORT` / `GATEWAY_PORT` | `8001` / `8000` | first vLLM port (servers use base, base+1, …) / gateway port |
 | `MAX_MODEL_LEN` / `GPU_MEM_UTIL` | `8192` / `0.90` | vLLM context / total GPU fraction (split ∝ params_b) |
 | `CF_TUNNEL` | `1` | auto Cloudflare quick tunnel for a public URL |

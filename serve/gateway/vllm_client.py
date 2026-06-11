@@ -70,8 +70,8 @@ def extract_last_json_object(text: str) -> Optional[dict]:
     """Return the LAST balanced top-level JSON object in `text`, or None.
 
     The generator/judge prompts tell the model to END its reply with the JSON
-    object; reasoning prose before it (models like LFM2.5 think in plain text,
-    untagged) can itself contain braces, so the last object is the verdict."""
+    object; reasoning prose before it (some models think in plain text, untagged)
+    can itself contain braces, so the last object is the verdict."""
     text = strip_think(text or "")
     best: Optional[dict] = None
     i = 0
