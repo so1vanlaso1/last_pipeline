@@ -288,18 +288,50 @@ fi
 PUBLIC_IP="${PUBLIC_IPADDR:-$(curl -fsS https://api.ipify.org 2>/dev/null || true)}"
 URLS_FILE="$HERE/submission/urls.txt"
 mkdir -p "$HERE/submission"
+if [ -n "$PUBLIC_URL" ]; then
+    BASE="$PUBLIC_URL"
+else
+    BASE="http://${PUBLIC_IP:-<PUBLIC_IP>}:${GATEWAY_PORT}"
+fi
 {
     echo "# EXACT 2026 — submission URLs (generated $(date -u '+%Y-%m-%dT%H:%M:%SZ'))"
-    if [ -n "$PUBLIC_URL" ]; then
-        echo "PREDICT_URL=${PUBLIC_URL}/predict"
-        echo "MODELS_URL=${PUBLIC_URL}/v1/models"
-    else
-        echo "PREDICT_URL=http://${PUBLIC_IP:-<PUBLIC_IP>}:${GATEWAY_PORT}/predict"
-        echo "MODELS_URL=http://${PUBLIC_IP:-<PUBLIC_IP>}:${GATEWAY_PORT}/v1/models"
+    echo "PREDICT_URL=${BASE}/predict"
+    echo "#"
+    echo "# One /v1/models per vLLM server (Submission Guide §6.3 — 'a /v1/models URL"
+    echo "# for each vLLM server'). Proxied through this single host, each reachable"
+    echo "# even while that model is swapped to sleep (the list is metadata)."
+    for idx in "${!MIDS[@]}"; do
+        echo "MODELS_URL_${PORTS[$idx]}=${BASE}/vllm/${PORTS[$idx]}/v1/models   # ${MIDS[$idx]} (${ROLES[$idx]:-voter})"
+    done
+    echo "#"
+    echo "# Aggregated list of every resident model (convenience):"
+    echo "MODELS_URL=${BASE}/v1/models"
+    echo "# Live GPU-residency proof (<=8B loaded-and-running at any instant):"
+    echo "HEALTH_URL=${BASE}/health"
+    if [ -z "$PUBLIC_URL" ]; then
+        echo "#"
         echo "# (No tunnel — using vast.ai port mapping? replace host:port with the"
         echo "#  external mapping vast.ai shows for internal port ${GATEWAY_PORT}.)"
     fi
-    echo "# /v1/models aggregates every resident model so the committee can verify the line-up."
+    # OPTIONAL: DIRECT vLLM host /v1/models (the literal §6.2 '<your-vllm-host>/v1/models',
+    # hitting each raw vLLM server instead of the gateway proxy). Only emitted if you
+    # actually expose the vLLM ports — set VLLM_PUBLIC_BASE=<public-host-or-ip>, and for
+    # any port vast.ai REMAPS to a different external port, override the whole URL with
+    # VLLM_PUBLIC_<port>=http://host:extport.  ⚠ SECURITY: with SWAP on, vLLM runs in dev
+    # mode and the same port also serves /sleep & /wake_up — only expose these to a
+    # trusted committee; otherwise prefer the read-only /vllm/<port>/v1/models proxy above.
+    if [ -n "${VLLM_PUBLIC_BASE:-}" ] || compgen -A variable | grep -q '^VLLM_PUBLIC_[0-9]'; then
+        echo "#"
+        echo "# DIRECT raw-vLLM-host /v1/models (§6.2):"
+        for idx in "${!MIDS[@]}"; do
+            p="${PORTS[$idx]}"; ov="VLLM_PUBLIC_${p}"
+            if [ -n "${!ov:-}" ]; then
+                echo "MODELS_URL_${p}_DIRECT=${!ov%/}/v1/models   # ${MIDS[$idx]}"
+            elif [ -n "${VLLM_PUBLIC_BASE:-}" ]; then
+                echo "MODELS_URL_${p}_DIRECT=http://${VLLM_PUBLIC_BASE}:${p}/v1/models   # ${MIDS[$idx]} (override w/ VLLM_PUBLIC_${p} if vast.ai remaps this port)"
+            fi
+        done
+    fi
 } > "$URLS_FILE"
 
 echo

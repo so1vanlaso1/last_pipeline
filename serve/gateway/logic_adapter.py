@@ -449,12 +449,12 @@ def _arbiter_choice(gen_specs, arbiter: LLMClient, q: PredictQuery) -> PredictRe
 
     # Stage 2: swap the judge in (generators sleep) for the arbitration AND any
     # arbiter-backed fallbacks below, then the generators wake back up on exit.
-    with mgr.judge():
+    with mgr.judge() as judge_ready:
         try:
             text = _chat(
                 arbiter, system, user, query_id=q.query_id, stage="arbiter.judge",
                 loaded_clients=[arbiter], max_tokens=_think_tokens(),
-            )
+            ) if judge_ready else ""     # judge not woken (swap degrade) -> use juniors
         except Exception:
             text = ""
         data = extract_last_json_object(text) or {}
@@ -533,13 +533,13 @@ def _arbiter_free_form(gen_specs, arbiter: LLMClient, q: PredictQuery) -> Predic
         f"Junior {i} ({c['label']}): answer={c['answer'] or 'N/A'}; "
         f"premises_used={[j + 1 for j in c['premises_used']]}; explanation={c['explanation'] or '(none)'}"
         for i, c in enumerate(cands, 1))
-    with mgr.judge():                            # stage 2: swap the judge in
+    with mgr.judge() as judge_ready:             # stage 2: swap the judge in
         try:
             text = _chat(
                 arbiter, asys, auser, query_id=q.query_id,
                 stage="arbiter.free_form_judge", loaded_clients=[arbiter],
                 max_tokens=_think_tokens(),
-            )
+            ) if judge_ready else ""     # judge not woken (swap degrade) -> use juniors
         except Exception:
             text = ""
     data = extract_last_json_object(text) or {}

@@ -51,6 +51,17 @@ _OP_TIMEOUT = float(os.environ.get("RESIDENCY_OP_TIMEOUT", "180"))
 # generations after the first sleep/wake cycle); only use it with 4bit/bf16 weights.
 # Either level moves weights OFF the GPU, so the ≤8B-on-GPU rule holds either way.
 _SLEEP_LEVEL = int(os.environ.get("RESIDENCY_SLEEP_LEVEL", "1"))
+# A /sleep that is not CONFIRMED leaves that group's weights on the GPU, so the swap
+# retries before giving up — and if it still cannot confirm, it REFUSES to wake the
+# other group. Waking anyway is the only normal path to >8B on the GPU, which would
+# fail the committee's GPU-memory inspection (Submission Guide §6.3).
+_SLEEP_RETRIES = int(os.environ.get("RESIDENCY_SLEEP_RETRIES", "3"))
+
+
+class ResidencySwapError(RuntimeError):
+    """The swap could not guarantee the ≤8B-on-GPU invariant (a group would not
+    confirm asleep). Raised instead of loading more weights on top — the caller
+    degrades the query rather than letting the GPU exceed the 8B budget."""
 
 
 def _root(base_url: str) -> str:
@@ -80,12 +91,47 @@ class Residency:
             log.warning("residency %s%s failed: %s", root, path, exc)
             return False
 
+    def _is_sleeping(self, root: str) -> Optional[bool]:
+        """Best-effort confirmation via vLLM's GET /is_sleeping. Returns None when
+        the endpoint is unavailable (older vLLM), so callers fall back to trusting
+        the synchronous /sleep response."""
+        try:
+            resp = requests.get(root + "/is_sleeping", timeout=_OP_TIMEOUT)
+            resp.raise_for_status()
+            return bool(resp.json().get("is_sleeping", False))
+        except Exception:
+            return None
+
     def _sleep(self, root: str) -> bool:
-        ok = self._post(root, "/sleep", level=_SLEEP_LEVEL)
-        if not ok:  # a generator/judge that won't sleep keeps its weights -> the
-            log.error("residency: FAILED to sleep %s — the swap invariant (only one "
-                      "group resident) may be violated this query", root)
-        return ok
+        """Sleep a server and CONFIRM its weights left the GPU. vLLM /sleep is
+        synchronous (it returns only after the offload to CPU RAM completes), so a
+        200 already means the weights are off the GPU; we retry on failure and, when
+        the endpoint exists, double-check /is_sleeping. Returns True ONLY when the
+        group is confirmed asleep — the caller must not wake another group otherwise."""
+        for attempt in range(1, _SLEEP_RETRIES + 1):
+            ok = self._post(root, "/sleep", level=_SLEEP_LEVEL)
+            confirmed = self._is_sleeping(root)          # True / False / None(unknown)
+            if ok and confirmed is not False:
+                return True
+            log.warning("residency: %s sleep attempt %d/%d unconfirmed "
+                        "(post_ok=%s, is_sleeping=%s)", root, attempt, _SLEEP_RETRIES,
+                        ok, confirmed)
+        log.critical("residency: could NOT confirm %s asleep after %d attempts — "
+                     "REFUSING to wake another group so the GPU stays <= 8B (this "
+                     "query degrades to the awake group's answer)", root, _SLEEP_RETRIES)
+        return False
+
+    def server_asleep(self, base_url: str) -> Optional[bool]:
+        """Public, for /health: is the server at base_url asleep right now? Uses the
+        live /is_sleeping when available, else falls back to the known resting state
+        (judge asleep unless inside a judge() block; generators awake)."""
+        root = _root(base_url)
+        live = self._is_sleeping(root)
+        if live is not None:
+            return live
+        if root == self._judge:
+            return not self._judge_awake
+        return False
 
     def _wake(self, root: str) -> bool:
         ok = self._post(root, "/wake_up")
@@ -97,31 +143,50 @@ class Residency:
     # ── orchestration ────────────────────────────────────────────────────────
     def ensure_generators(self) -> None:
         """Put the line-up into the resting state (generators awake, judge asleep)
-        before a generation phase. Cheap no-op when already resting."""
+        before a generation phase. Cheap no-op when already resting (the judge is
+        slept at boot and after every judge() block, so normally no sleep is needed).
+
+        Compliance: the judge's 8B must be CONFIRMED off the GPU before the 2×4B
+        generators are loaded — otherwise the card briefly holds 8+8=16B. If the
+        judge will not sleep we raise instead of co-loading (the query degrades)."""
         if not self.enabled:
             return
         with self._lock:
             if self._judge_awake:
-                self._sleep(self._judge)
+                if not self._sleep(self._judge):
+                    raise ResidencySwapError(
+                        "judge would not sleep; refusing to also load the generators "
+                        "(would exceed 8B on the GPU)")
                 self._judge_awake = False
             for g in self._gens:
                 self._wake(g)
 
     @contextmanager
     def judge(self):
-        """Swap the judge in for the duration of the block: sleep the generators,
-        wake the judge; on exit sleep the judge and wake the generators back to the
-        resting state. The lock serialises this across concurrent queries."""
+        """Swap the judge in for the duration of the block and YIELD whether the
+        judge is actually awake. ALL generators must be CONFIRMED asleep before the
+        8B judge is woken (else the card holds 4+…+8 > 8B). If any generator will not
+        sleep, the judge is NOT woken: we restore the resting state and yield False so
+        the caller falls back to the generators' answer — keeping the GPU ≤ 8B. On
+        exit the judge sleeps and the generators wake back to the resting state. The
+        lock serialises this across concurrent queries."""
         if not self.enabled:
-            yield
+            yield True
             return
         with self._lock:
-            for g in self._gens:
-                self._sleep(g)
+            slept = [self._sleep(g) for g in self._gens]
+            if not all(slept):
+                for g, ok in zip(self._gens, slept):     # undo the partial swap
+                    if ok:
+                        self._wake(g)
+                log.critical("residency: not all generators confirmed asleep — judge "
+                             "NOT woken; Type 1 uses the generator answer (GPU stays <= 8B)")
+                yield False
+                return
             self._wake(self._judge)
             self._judge_awake = True
             try:
-                yield
+                yield True
             finally:
                 self._sleep(self._judge)
                 self._judge_awake = False

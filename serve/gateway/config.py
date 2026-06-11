@@ -311,11 +311,23 @@ def print_launch_plan() -> None:
         )
         sys.exit(2)
     if total > 8.0 + 1e-9:
-        sys.stderr.write(
-            f"[config] WARNING: resident models total {total:g}B — over the committee's "
-            f"8B-at-any-moment limit (Submission Guide 6.3; MoE counts TOTAL params). "
-            f"Launching anyway because max_resident_b={limit:g} was set explicitly.\n"
-        )
+        if swap:
+            gens_sum = sum(m["params_b"] for m in models if m.get("role") != "judge")
+            judge_b = max((m["params_b"] for m in models if m.get("role") == "judge"),
+                          default=0.0)
+            peak = max(gens_sum, judge_b)
+            sys.stderr.write(
+                f"[config] NOTE: line-up DECLARES {total:g}B total, but SWAP keeps only one "
+                f"group on the GPU at a time -> peak resident ~{peak:g}B. Load/unload to stay "
+                f"<= 8B at any single moment is allowed (Q3); max_resident_b={limit:g} bounds "
+                f"the total-that-exists, not the momentary GPU load.\n"
+            )
+        else:
+            sys.stderr.write(
+                f"[config] WARNING: {total:g}B resident ALL AT ONCE (swap OFF) — over the "
+                f"committee's 8B-at-any-moment limit (Submission Guide 6.3; MoE counts TOTAL "
+                f"params). Launching anyway because max_resident_b={limit:g} was set explicitly.\n"
+            )
     sys.stdout.write(f"#swap\t{1 if swap else 0}\n")
     for m, frac in zip(models, gpu_fractions(models)):
         flags = " ".join(quant_flags(m["quant"])) or "-"
