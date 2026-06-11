@@ -30,7 +30,7 @@
 #   CF_TUNNEL=1                 # 1=auto Cloudflare tunnel for a public URL; 0=off
 #   PHYSICS_LLM_FALLBACK=1      # 1=LLM fills physics answers only when the solver abstains
 #   HF_TOKEN=                   # only needed if you switch MODEL_ID to a gated repo
-#   VLLM_TORCH_BACKEND=auto     # torch CUDA build for vLLM: auto|cu128|cu126|cu130 (auto = match driver)
+#   VLLM_VERSION=               # pin a vLLM version (e.g. one built for your driver's CUDA); empty=latest
 #   SKIP_INSTALL=0              # 1=skip pip install (just (re)launch the servers)
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -82,25 +82,29 @@ source "$ROOT/.venv/bin/activate"
 
 # ── 4. Python deps ───────────────────────────────────────────────────────────
 if [ "$SKIP_INSTALL" != "1" ]; then
-    python -m pip install --upgrade pip wheel setuptools uv
+    python -m pip install --upgrade pip wheel setuptools
 
-    # IMPORTANT: plain `pip install vllm` may pull a torch built for a NEWER CUDA
-    # than the box's NVIDIA driver supports → vLLM dies at startup with
-    # "The NVIDIA driver on your system is too old (found version …)". We install
-    # via `uv pip install --torch-backend=…`, which picks the torch CUDA build that
-    # matches the detected driver. Override with VLLM_TORCH_BACKEND (auto|cu128|
-    # cu126|cu130|…); 'auto' detects the driver (recommended).
-    echo "== Installing vLLM with a driver-matched torch (uv --torch-backend) =="
-    VLLM_SPEC="vllm"; [ -n "${VLLM_VERSION:-}" ] && VLLM_SPEC="vllm==${VLLM_VERSION}"
-    uv pip install --python "$(command -v python)" "${VLLM_SPEC}" \
-        --torch-backend="${VLLM_TORCH_BACKEND:-auto}"
+    # vLLM ships ONE CUDA build per release and pulls its OWN matching torch, so we
+    # install them together as a consistent stack. Do NOT swap only torch's CUDA:
+    # vLLM's compiled extension (vllm._C) would then mismatch
+    # (ImportError: libcudart.so.<N>). A recent vLLM is a CUDA-13 build and needs a
+    # driver new enough for it — check `nvidia-smi` "CUDA Version" >= the wheel's
+    # CUDA. If your box's driver is older (e.g. CUDA 12.x), either use a newer-driver
+    # box or pin an older VLLM_VERSION whose wheel targets your driver's CUDA (note:
+    # very new models may not be supported by older vLLM).
+    echo "== Installing vLLM (+ its matching torch; can take a while) =="
+    if [ -n "${VLLM_VERSION:-}" ]; then
+        pip install "vllm==${VLLM_VERSION}"
+    else
+        pip install vllm
+    fi
 
     echo "== Installing gateway + physics-pipeline requirements =="
     pip install -r "$SERVE/requirements.txt"
 
-    # Sanity: fail fast (with a clear message) if torch can't see the GPU — almost
-    # always a torch/driver CUDA mismatch. Set VLLM_TORCH_BACKEND=cu128 and re-run.
-    python - <<'PY' || { echo "[setup] ERROR: torch cannot use the GPU — likely a CUDA/driver mismatch. Re-run with VLLM_TORCH_BACKEND=cu128 (or cu126)." >&2; exit 3; }
+    # Fail fast with a clear message if torch can't reach the GPU — on vast.ai this
+    # is almost always "host driver too old for this vLLM/torch CUDA build".
+    python - <<'PY' || { echo "[setup] ERROR: torch cannot use the GPU. Your NVIDIA driver is likely too old for this vLLM build's CUDA. Fix: use a box whose 'nvidia-smi' CUDA Version >= the wheel's CUDA (a recent vLLM needs CUDA 13 → driver >= 580), or pin an older VLLM_VERSION built for your driver's CUDA." >&2; exit 3; }
 import torch, sys
 print(f"  torch {torch.__version__}, cuda_available={torch.cuda.is_available()}")
 sys.exit(0 if torch.cuda.is_available() else 1)
