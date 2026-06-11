@@ -108,6 +108,7 @@ verdict. Helper JSON calls (premises_used, option pick) are always no-think.
 | `MODEL_ID` | `google/gemma-4-E4B-it` | fallback single model if the yaml is absent |
 | `VLLM_BASE_PORT` / `GATEWAY_PORT` | `8001` / `8000` | first vLLM port (servers use base, base+1, …) / gateway port |
 | `MAX_MODEL_LEN` / `GPU_MEM_UTIL` | `8192` / `0.90` | vLLM context / total GPU fraction (split ∝ params_b) |
+| `MAX_NUM_SEQS` | `16` | max concurrent seqs/server — small cuts startup/sampler VRAM (the gateway is sequential) |
 | `CF_TUNNEL` | `1` | auto Cloudflare quick tunnel for a public URL |
 | `PHYSICS_LLM_FALLBACK` | `1` | LLM fills Type 2 answers only when the solver abstains |
 | `GATEWAY_LLM` | `vllm` | set `stub` for the no-GPU wiring test |

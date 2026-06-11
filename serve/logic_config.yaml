@@ -72,7 +72,11 @@ swap: true
 #           unsupported on Ampere (A100/3090).
 #   4bit  — bitsandbytes NF4 (~0.5 B/param). Needs the `bitsandbytes` package
 #           (serve/requirements.txt installs it). Smallest footprint.
-quantization: none
+# DEPLOYMENT: RTX 5090 (32 GB, Blackwell → FP8-capable). 8bit + swap fits: peak is
+# the generator phase (Qwen-4B + Gemma-E2B co-resident ≈ 14 GB of FP8 weights +
+# CUDA graphs + KV ≈ ~22 GB); the 8B judge runs alone (~16 GB) swapped in per query.
+# All-resident (SWAP=0) at 8bit does NOT fit 32 GB — keep swap: true below.
+quantization: 8bit
 
 # Thinking mode for the reasoning calls (env THINKING overrides; a model may
 # override with its own `thinking:`). true = the model emits a reasoning chain

@@ -17,6 +17,11 @@ GATEWAY_PORT="${GATEWAY_PORT:-8000}"
 VLLM_BASE_PORT="${VLLM_BASE_PORT:-8001}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.90}"
+# The gateway drives each server SEQUENTIALLY, so a small max concurrent-sequence
+# count is plenty — and it slashes vLLM's sampler-warmup memory (256 dummy seqs ×
+# a big vocab can OOM an 8B bf16 model on a 24 GB card right at startup). Raise it
+# only if you actually batch many requests at once.
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-16}"
 CF_TUNNEL="${CF_TUNNEL:-1}"
 
 export VLLM_BASE_PORT GPU_MEM_UTIL
@@ -87,18 +92,27 @@ start_one() {                                    # MID PORT FRAC QUANT
     download_model "$MID"
     local QARGS=(); [ -n "$QUANT" ] && [ "$QUANT" != "-" ] && read -ra QARGS <<< "$QUANT"
     local SLEEPF=(); [ "$SWAP" = "1" ] && SLEEPF=(--enable-sleep-mode)
+    # ENFORCE_EAGER=1 disables CUDA-graph capture (saves VRAM on tight cards; slower
+    # inference). Leave unset for "eager off" = graphs ON (default, faster).
+    local EAGERF=(); [ "${ENFORCE_EAGER:-0}" = "1" ] && EAGERF=(--enforce-eager)
+    # VIT_ATTN_BACKEND pins the multimodal vision-tower attention backend. On Blackwell
+    # GPUs (RTX 50xx) with an older driver, the prebuilt flash-attn ViT kernel can fail
+    # with cudaErrorUnsupportedPtxVersion; set VIT_ATTN_BACKEND=TORCH_SDPA to avoid it.
+    local VITF=(); [ -n "${VIT_ATTN_BACKEND:-}" ] && VITF=(--mm-encoder-attn-backend "$VIT_ATTN_BACKEND")
     echo "[run] starting vLLM ${MID} on :${PORT} (gpu_frac=${FRAC}, quant='${QUANT}', log: $LOGDIR/vllm_${PORT}.log)"
     if command -v vllm >/dev/null 2>&1; then
         nohup vllm serve "$MID" \
             --host 0.0.0.0 --port "$PORT" --served-model-name "$MID" \
             --max-model-len "$MAX_MODEL_LEN" --gpu-memory-utilization "$FRAC" --dtype auto \
-            "${SLEEPF[@]}" "${QARGS[@]}" \
+            --max-num-seqs "$MAX_NUM_SEQS" \
+            "${SLEEPF[@]}" "${EAGERF[@]}" "${VITF[@]}" "${QARGS[@]}" \
             > "$LOGDIR/vllm_${PORT}.log" 2>&1 &
     else
         nohup python -m vllm.entrypoints.openai.api_server \
             --model "$MID" --host 0.0.0.0 --port "$PORT" --served-model-name "$MID" \
             --max-model-len "$MAX_MODEL_LEN" --gpu-memory-utilization "$FRAC" --dtype auto \
-            "${SLEEPF[@]}" "${QARGS[@]}" \
+            --max-num-seqs "$MAX_NUM_SEQS" \
+            "${SLEEPF[@]}" "${EAGERF[@]}" "${VITF[@]}" "${QARGS[@]}" \
             > "$LOGDIR/vllm_${PORT}.log" 2>&1 &
     fi
     echo $! > "$LOGDIR/vllm_${PORT}.pid"

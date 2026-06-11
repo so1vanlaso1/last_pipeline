@@ -251,6 +251,7 @@ Set any of these before `bash setup.sh` (or `SKIP_INSTALL=1 bash setup.sh`).
 | `LOGIC_THINK_TOKENS` | `1024` | max tokens per thinking generate/judge call |
 | `MAX_MODEL_LEN` | `8192` | vLLM context length |
 | `GPU_MEM_UTIL` | `0.90` | total GPU fraction (split ∝ params_b; per-model `gpu_memory_utilization:` overrides) |
+| `MAX_NUM_SEQS` | `16` | max concurrent sequences per vLLM server. Small = far less startup/sampler VRAM (the gateway is sequential); raise only if batching |
 
 ### Server / deployment
 | Var | Default | Meaning |

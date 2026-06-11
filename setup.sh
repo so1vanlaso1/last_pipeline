@@ -28,6 +28,7 @@
 #   GATEWAY_PORT=8000           # gateway /predict port (internal)
 #   MAX_MODEL_LEN=8192          # vLLM context length
 #   GPU_MEM_UTIL=0.90           # vLLM GPU memory fraction
+#   MAX_NUM_SEQS=16             # max concurrent seqs per server (small = less startup VRAM; gateway is sequential)
 #   QUANTIZATION=none           # precision for every model: none(bf16) | 8bit | 4bit
 #   CF_TUNNEL=1                 # 1=auto Cloudflare tunnel for a public URL; 0=off
 #   PHYSICS_LLM_FALLBACK=1      # 1=LLM fills physics answers only when the solver abstains
