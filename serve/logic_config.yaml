@@ -7,7 +7,7 @@
 # Type 1 flow (mode: arbiter — the generate→judge design):
 #
 #     Question
-#        ├─ the two 4B "generator" models answer CONCURRENTLY in THINKING mode,
+#        ├─ the two 4B "generator" models answer CONCURRENTLY (non-thinking, direct),
 #        │  each emitting {answer, premises_used, explanation}
 #        ├─ the two generators are then PUT TO SLEEP and the 8B "judge" is WOKEN,
 #        │  also in THINKING mode; it inspects the original premises + question
@@ -20,8 +20,8 @@
 # Type 2 (physics) uses the FIRST generator for its optional LLM calls.
 #
 # ── THE LINE-UP (param count the committee counts = TOTAL params) ────────────
-#   Qwen/Qwen3.5-4B               4B   (ungated, VLM)             generator (thinking)
-#   Qwen/Qwen3-4B-Thinking-2507   4B   (ungated, thinking-only)   generator (thinking)
+#   Qwen/Qwen3.5-4B               4B   (ungated, VLM)             generator (non-thinking)
+#   Qwen/Qwen3-4B-Instruct-2507   4B   (ungated, text)            generator (non-thinking)
 #   google/gemma-4-E4B-it         8B   (ungated, ~8B total)       judge     (thinking)
 #
 #   All three are UNGATED — no HF_TOKEN required. Point the judge at any other repo
@@ -98,13 +98,13 @@ models:
     params_b: 4
     weight: 1.0
     role: generator
-    thinking: true
+    thinking: false                 # direct answers; both generators run non-thinking and the judge does the reasoning
     gpu_memory_utilization: 0.36    # co-resident with the second 4B generator
-  - id: Qwen/Qwen3-4B-Thinking-2507  # ungated, thinking-only reasoning model
+  - id: Qwen/Qwen3-4B-Instruct-2507  # ungated, non-thinking (direct-answer) model
     params_b: 4
     weight: 1.0
     role: generator
-    thinking: true
+    thinking: false
     gpu_memory_utilization: 0.36    # co-resident with the first 4B generator
   # ── JUDGE (the 8B) ─────────────────────────────────────────────────────────
   # Woken ALONE (both generators slept) for its arbitration call, so it gets the
