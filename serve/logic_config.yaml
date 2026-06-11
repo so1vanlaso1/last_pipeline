@@ -20,22 +20,24 @@
 # Type 2 (physics) uses the FIRST generator for its optional LLM calls.
 #
 # ── THE LINE-UP (param count the committee counts = TOTAL params) ────────────
-#   Qwen/Qwen3.5-4B               4B   (ungated, VLM)             generator (non-thinking)
-#   Qwen/Qwen3-4B-Instruct-2507   4B   (ungated, text)            generator (non-thinking)
+#   Qwen/Qwen3-4B                 4B   (ungated, text, dense)     generator (non-thinking)
+#   Qwen/Qwen3-4B-Instruct-2507   4B   (ungated, text, dense)     generator (non-thinking)
 #   google/gemma-4-E4B-it         8B   (ungated, ~8B total)       judge     (thinking)
+#   All TEXT-ONLY → all SLEEP CLEAN (slept ~0.73 GiB). A VLM (e.g. Qwen3.5-4B)
+#   was rejected as a generator: its weights would not sleep-evict (stuck ~4.4 GiB).
 #
 #   All three are UNGATED — no HF_TOKEN required. Point the judge at any other repo
 #   via env JUDGE_MODEL / JUDGE_PARAMS_B (see its entry under `models:`).
 #
 # ── THE HARD INVARIANT (contest compliance + OOM safety) ─────────────────────
 #   At EVERY instant EXACTLY ONE group has weights on the GPU:
-#       {both 4B generators}  XOR  {the 8B judge}     — never all three, never a mix.
+#       {both 4B generators}  XOR  {the 8B judge}    — never all three, never a mix.
 #   Enforced by SLEEP LEVEL 1 (the slept group's weights are offloaded OFF the GPU to
 #   CPU RAM — lossless, FP8-safe). So the params LOADED ON-GPU at any moment are exactly
-#   max(4+4, 8) = 8B, satisfying
-#   the committee's "≤ 8B loaded at any single moment" rule (Submission Guide §6.3).
-#   The committee counts TOTAL params that EXIST (4+4+8 = 16B) → that is what the
-#   launch guard checks against `max_resident_b` below; the *momentary* load is 8B.
+#   max(4+4, 8) = 8B, satisfying the committee's "≤ 8B loaded at any single moment" rule
+#   (Submission Guide §6.3). The committee counts TOTAL params that EXIST (4+4+8 = 16B) →
+#   that is what the launch guard checks against `max_resident_b` below; the *momentary*
+#   load is 8B.
 #
 # ── PRECISION + MEMORY (RTX 5090, 32 GiB ≈ 31.8 GiB usable) ───────────────────
 #   quantization: 8bit  → online FP8 (~1 byte/param) on this Blackwell card.
@@ -94,13 +96,19 @@ max_resident_b: 16
 # co-resident generators (gen phase) and the lone judge (judge phase) each fit the
 # 32 GB card alongside the OTHER group's slept-process residual (see budget above).
 models:
-  - id: Qwen/Qwen3.5-4B
+  # ── GENERATORS (two 4B juniors, TEXT-ONLY → both sleep clean) ─────────────────
+  # Both are dense TEXT Qwen3-4B checkpoints whose weights vLLM sleep mode fully
+  # offloads to CPU RAM (verified: Qwen3-4B-Instruct slept to 730 MiB). They run
+  # CO-RESIDENT during generation (4B + 4B = 8B) and BOTH sleep for the judge phase,
+  # so peak resident = max(4+4, 8) = 8B. ⚠ Only add TEXT-ONLY (non-VLM) generators
+  # here — a VLM (e.g. Qwen3.5-4B) will NOT sleep-evict its weights and breaks ≤8B.
+  - id: Qwen/Qwen3-4B                # ungated, text-only, dense 4.0B (apache-2.0)
     params_b: 4
     weight: 1.0
     role: generator
-    thinking: false                 # direct answers; both generators run non-thinking and the judge does the reasoning
+    thinking: false                 # direct answers; the judge does the reasoning
     gpu_memory_utilization: 0.36    # co-resident with the second 4B generator
-  - id: Qwen/Qwen3-4B-Instruct-2507  # ungated, non-thinking (direct-answer) model
+  - id: Qwen/Qwen3-4B-Instruct-2507  # ungated, text-only, non-thinking (direct-answer)
     params_b: 4
     weight: 1.0
     role: generator

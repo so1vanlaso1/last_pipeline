@@ -54,23 +54,23 @@ Sample entries (fill in 2–3 short examples per dataset before submitting).
 ## 3. Model size calculation (≤ 8B loaded-and-running at any moment)
 
 We declare **three** open-source LLMs, all served via vLLM. The total that *exists*
-is 16B, but they are **never co-resident**: a residency swap keeps only one group's
-weights on the GPU at any instant, so the **loaded-and-running total is 8B at every
+is 16B, but they are **never all co-resident**: a residency swap keeps only one group's
+weights on the GPU at any instant, so the **loaded-and-running total is ≤ 8B at every
 moment** — within the limit per **Q3** ("load and unload so that at any single
 moment the models resident and running on the GPU stay within 8B").
 
 | Model | Role | Param count (counted) | On GPU during… |
 |---|---|---|---|
-| `Qwen/Qwen3.5-4B` | generator | 4B (dense) | generation |
-| `Qwen/Qwen3-4B-Instruct-2507` | generator | 4B (dense) | generation |
+| `Qwen/Qwen3-4B` | generator | 4B (dense, text-only) | generation |
+| `Qwen/Qwen3-4B-Instruct-2507` | generator | 4B (dense, text-only) | generation |
 | `google/gemma-4-E4B-it` | judge | **8B total** (MoE/Matformer — total, not the ~4B effective, per Q2) | arbitration |
 
 **The invariant — exactly one group on the GPU:**
 
 ```
-Generation phase :  Qwen3.5-4B (4B) + Qwen3-4B (4B) AWAKE   = 8B on GPU ; judge ASLEEP
-Arbitration phase:  gemma-4-E4B (8B) AWAKE                  = 8B on GPU ; both gens ASLEEP
-Peak resident     =  max(4 + 4, 8)                          = 8B  ✓
+Generation phase :  Qwen3-4B (4B) + Qwen3-4B-Instruct (4B) AWAKE = 8B on GPU ; judge ASLEEP
+Arbitration phase:  gemma-4-E4B (8B) AWAKE                       = 8B on GPU ; both gens ASLEEP
+Peak resident     =  max(4+4, 8)                                 = 8B  ✓
 ```
 
 The swap uses **vLLM sleep mode, level 1**: the inactive group's weights are
@@ -94,8 +94,8 @@ extractors, unit verifiers) are **0 params** and do not count (§6.3).
 
 > **Strictly-single-model alternatives** (zero swap, every `/v1/models` sums to ≤8B)
 > are kept one edit away in `serve/logic_config.yaml`: a single `gemma-4-E4B-it`
-> (8B, two-pass self-judge) or a single `Qwen3.5-4B` (4B). Switching is a 30-second
-> config change if a simpler footprint is preferred for the slot.
+> (8B, two-pass self-judge) or a single `Qwen3-4B-Instruct-2507` (4B). Switching is a
+> 30-second config change if a no-swap footprint is preferred for the slot.
 
 ## 4. Serving & verification (vLLM)
 
@@ -104,7 +104,7 @@ inference API** (Together / Fireworks / Groq / Replicate) is used anywhere, in
 either pipeline (§6.2 / Q5). Each model runs in its own `vllm serve` process and is
 verifiable independently:
 
-- `…/vllm/8001/v1/models` → `Qwen/Qwen3.5-4B` (generator)
+- `…/vllm/8001/v1/models` → `Qwen/Qwen3-4B` (generator)
 - `…/vllm/8002/v1/models` → `Qwen/Qwen3-4B-Instruct-2507` (generator)
 - `…/vllm/8003/v1/models` → `google/gemma-4-E4B-it` (judge)
 

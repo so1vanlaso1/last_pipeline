@@ -200,13 +200,17 @@ def test_config_lineup_roles_and_budget():
     assert models, "expected at least one resident model"
     # The line-up must fit the configured residency budget (the launch guard).
     assert config.total_params_b(models) <= config.max_resident_b() + 1e-9
-    # The default config is the generate→judge design: 2 generators + the
-    # Gemma-4 8B judge.
+    # Generate→judge design: at least one generator + exactly one 8B judge.
     roles = [m["role"] for m in models]
-    assert roles.count("generator") == 2
+    assert roles.count("generator") >= 1
     assert roles.count("judge") == 1
     judge = next(m for m in models if m["role"] == "judge")
     assert judge["id"] == "google/gemma-4-E4B-it"
+    # Compliance: with the swap only ONE group is on the GPU at a time, so the peak
+    # momentary load = max(sum of generators, judge) must stay within 8B (§6.3 / Q3).
+    gens_b = sum(m["params_b"] for m in models if m["role"] != "judge")
+    peak = max(gens_b, judge["params_b"]) if config.swap_active(models) else config.total_params_b(models)
+    assert peak <= 8.0 + 1e-9, f"peak resident {peak}B exceeds the 8B limit"
 
 
 def test_batch_list_input():

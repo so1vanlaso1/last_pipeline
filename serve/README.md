@@ -9,7 +9,7 @@ endpoint**, served via **vLLM**, with one setup script for vast.ai.
         ▼
   Gateway (FastAPI, :8000)
         ├── type1 → generate→judge flow over the resident vLLM line-up:
-        │     Qwen3.5-4B (4B)        ┐ concurrent direct generators
+        │     Qwen3-4B (4B)          ┐ concurrent direct generators
         │     Qwen3-4B-Instruct (4B) ┘   {answer, premises_used, explanation}
         │     Gemma-4-E4B (8B)       the judge (thinking): rules on the candidates
         │     → deterministic code builds the result object
@@ -22,10 +22,12 @@ endpoint**, served via **vLLM**, with one setup script for vast.ai.
 ## The Type 1 flow (mode: arbiter, default)
 
 - **Stage 1 — generators.** Every `role: generator` model in
-  `serve/logic_config.yaml` (default: `Qwen/Qwen3.5-4B` + `Qwen/Qwen3-4B-Instruct-2507`,
-  4B each) answers **concurrently** (one vLLM server each), **direct (non-thinking)**,
-  and must end its reply with `{"answer", "premises_used", "explanation"}` (the
-  **last** balanced JSON object is parsed, so reasoning prose can't shadow it).
+  `serve/logic_config.yaml` (default: `Qwen/Qwen3-4B` + `Qwen/Qwen3-4B-Instruct-2507`,
+  4B each, **text-only**) answers **concurrently** (one vLLM server each), **direct
+  (non-thinking)**, and must end its reply with `{"answer", "premises_used",
+  "explanation"}` (the **last** balanced JSON object is parsed, so reasoning prose
+  can't shadow it). Keep generators **text-only** (they must sleep clean) with combined
+  size ≤ 8B — a VLM (e.g. Qwen3.5-4B) won't sleep-evict and breaks the judge phase.
 - **Stage 2 — the judge.** The `role: judge` model (default:
   `google/gemma-4-E4B-it`, ~8B, thinking on) receives the original premises +
   question plus both candidates (marked *reference only*), decides the truly
@@ -79,17 +81,19 @@ GPU sizing for the default line-up:
   generators stay co-resident and the 8B judge is **swapped in per query**: the
   inactive group's weights are **offloaded to CPU RAM** and copied back verbatim on
   wake (~1 s, lossless — required for FP8 weights). vLLM releases the weights'
-  physical VRAM, so a slept model leaves only a small CUDA-context residual on the
-  card. Peak resident is `max(4+4, 8) = 8B params`, so only **8B of weights are on
-  the GPU at any moment** (the line-up fits a 24 GB card). The judge boots first
-  (alone, full card) and is slept so the generators load into the freed memory;
-  `VLLM_SERVER_DEV_MODE=1` (run_server.sh sets it) enables the `/sleep` / `/wake_up`
-  / `/is_sleeping` endpoints. Set `RESIDENCY_SLEEP_LEVEL=2` only for a 4bit/bf16
-  line-up (disk discard+reload; it re-quantizes and corrupts FP8 on wake).
-* **`swap: false`** — all three resident at once: ~32+ GB total in bf16 (4B ≈ 8 G +
-  4B ≈ 8 G + 8B ≈ 16 G + KV caches), so a 48 GB card. **This breaks the ≤8B rule**
-  (16B co-resident) — only for local debugging, never the graded slot. `GPU_MEM_UTIL`
-  is then split across the servers in proportion to each model's `params_b`.
+  physical VRAM, so a slept model leaves only a small CUDA-context residual. Peak
+  resident is `max(4+4, 8) = 8B params`, so only **8B of weights are on the GPU at any
+  moment** (fits a 24 GB card). The judge boots first (alone, full card) and is slept
+  so the generators load into the freed memory; `VLLM_SERVER_DEV_MODE=1` (run_server.sh
+  sets it) enables the `/sleep` / `/wake_up` / `/is_sleeping` endpoints. Set
+  `RESIDENCY_SLEEP_LEVEL=2` only for a 4bit/bf16 line-up (disk discard+reload; it
+  re-quantizes and corrupts FP8 on wake). **Use only text-only models as generators**
+  — a VLM (e.g. Qwen3.5-4B) will not sleep-evict its weights and keeps the judge phase
+  above 8B.
+* **`swap: false`** — all three resident at once: ~32+ GB in bf16 (4B ≈ 8 G + 4B ≈ 8 G
+  + 8B ≈ 16 G + KV caches). **This breaks the ≤8B rule** (16B co-resident) — only for
+  local debugging, never the graded slot. `GPU_MEM_UTIL` is split across the servers in
+  proportion to each model's `params_b`.
 * **`quantization: none | 8bit | 4bit`** (yaml or env `QUANTIZATION`, per-model
   override allowed) shrinks every model: `8bit` = online FP8 (~half VRAM, needs
   an Ada/Hopper/Blackwell GPU); `4bit` = bitsandbytes NF4 (~quarter VRAM, needs
@@ -101,7 +105,7 @@ GPU sizing for the default line-up:
 own `/v1/models`), downloads only those models, and **refuses to start if the
 total-that-exists exceeds `max_resident_b`** (default 8; the shipped swap config
 raises it to 16 explicitly — the *momentary* GPU load is held to 8B by the swap,
-see the compliance section above). The default line-up (Qwen3.5 + Qwen3-4B-Instruct
+see the compliance section above). The default line-up (Qwen3-4B + Qwen3-4B-Instruct
 + Gemma-4) is **ungated** — no `HF_TOKEN` needed. Each model takes
 `role: generator | judge` (Type 1 flow) plus
 `params_b` and a vote `weight` (used by `mode: vote`). Each model also takes an
