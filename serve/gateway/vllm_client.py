@@ -258,9 +258,14 @@ class LLMClient:
         log_context: Optional[str] = None,
         loaded_models: Optional[List[str]] = None,
     ) -> Optional[dict]:
-        """Chat and parse the first JSON object out of the reply. Forces no-think
+        """Chat and parse the LAST JSON object out of the reply. Forces no-think
         (these are small helper calls — premises_used, option pick — where a
-        reasoning chain only risks polluting the JSON and costs latency)."""
+        reasoning chain only risks polluting the JSON and costs latency).
+
+        Uses the LAST object (same rule as the generator/judge path) because the
+        helper prompts embed a JSON *template/example*; a model that echoes the
+        template before its real answer would otherwise have the template parsed
+        instead of the answer."""
         text = self.chat(
             system,
             user,
@@ -270,7 +275,7 @@ class LLMClient:
             log_context=log_context,
             loaded_models=loaded_models,
         )
-        return extract_json_object(text)
+        return extract_last_json_object(text)
 
     def models(self) -> dict:
         """Proxy payload for GET /v1/models."""

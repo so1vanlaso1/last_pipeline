@@ -57,6 +57,26 @@ def to_ascii_unit(unit: Optional[str]) -> str:
     return u
 
 
+def to_ascii_answer(answer: Optional[str]) -> str:
+    """Render a Type 2 numeric answer in ASCII (Section 4.2 / 5 require ASCII output).
+
+    Only the unit field was being normalized; a solver/LLM answer like '2.5 × 10^7'
+    or '1.23×10^-4' otherwise ships the non-ASCII '×' (U+00D7) and would miss an
+    exact-match / ASCII grader. We map the multiply sign to 'x' (the same choice the
+    unit normalizer's _UNIT_REPLACEMENTS already uses) and the few other non-ASCII
+    operators to ASCII. The exponent is left in caret form ('10^7'); superscripts are
+    deliberately NOT collapsed here (turning '10⁷' into '107' would drop the
+    exponent) — the deterministic solver emits caret+ASCII exponents already."""
+    if answer is None:
+        return ""
+    a = str(answer).strip()
+    if not a:
+        return ""
+    a = (a.replace("×", "x").replace("·", ".")
+          .replace("−", "-").replace("–", "-"))
+    return a.strip()
+
+
 # ── LaTeX → ASCII pre-extraction normalization (Type 2 physics) ──────────────
 # The committee sends problems in LaTeX; the deterministic physics extractor parses
 # ASCII (e-notation, 'ohm', 'uF', 'R1'). This pass converts the LaTeX our notation
