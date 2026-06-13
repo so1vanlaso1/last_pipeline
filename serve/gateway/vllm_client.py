@@ -26,10 +26,6 @@ from .io_log import append_model_io, model_label
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _THINK_OPEN = re.compile(r"<think>.*", re.IGNORECASE | re.DOTALL)
-# Qwen3-4B-Thinking-2507 PRE-FILLS "<think>" in its chat template, so the model's
-# output is "reasoning…</think>final answer" with NO opening tag in the content.
-# Drop everything from the start up to and including the first lone </think>.
-_THINK_CLOSE_ONLY = re.compile(r"^.*?</think>", re.IGNORECASE | re.DOTALL)
 
 
 def strip_think(text: str) -> str:
@@ -38,10 +34,18 @@ def strip_think(text: str) -> str:
     Qwen3-4B-Thinking-2507 emits because its template pre-fills the opening tag)."""
     text = text or ""
     text = _THINK_BLOCK.sub(" ", text)
-    if "<think>" in text.lower():
+    low = text.lower()
+    if "<think>" in low:
         text = _THINK_OPEN.sub(" ", text)
-    if "</think>" in text.lower():          # lone closing tag → strip the lead-in too
-        text = _THINK_CLOSE_ONLY.sub(" ", text)
+        low = text.lower()
+    # Lone closing tag with no opening: drop the reasoning lead-in BUT only when
+    # nothing structural precedes it. If a "{" appears before the first "</think>",
+    # that token is inside the model's real JSON (e.g. quoted in an explanation), and
+    # stripping the lead-in would destroy the verdict object — so leave it alone.
+    if "<think>" not in low and "</think>" in low:
+        head, _sep, tail = text.partition("</think>")
+        if "{" not in head:
+            text = tail
     return text.strip()
 
 

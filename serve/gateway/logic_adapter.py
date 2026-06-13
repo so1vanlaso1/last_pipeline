@@ -406,13 +406,17 @@ def _render_candidates(cands: List[Dict[str, Any]]) -> str:
 
 
 def _chosen_candidate(data: Dict[str, Any], cands: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The junior the judge EXPLICITLY endorsed via its `chosen` field, or None when
+    the field is missing/garbled/out-of-range. Returning None (not cands[0]) lets the
+    caller tell 'judge picked junior 1' apart from 'judge made no pick' — so we never
+    staple an unendorsed junior's premises/explanation onto the judge's answer."""
     try:
         idx = int(data.get("chosen"))
     except (TypeError, ValueError):
-        return cands[0] if cands else None
+        return None
     if 1 <= idx <= len(cands):
         return cands[idx - 1]
-    return cands[0] if cands else None
+    return None
 
 
 def _run_generators(gen_specs, record: Record) -> List[Dict[str, Any]]:
@@ -463,18 +467,31 @@ def _arbiter_choice(gen_specs, arbiter: LLMClient, q: PredictQuery) -> PredictRe
         canon, display = canonicalize(ans_raw, record) if ans_raw else (None, "")
         answer = _map_to_option(canon, display, options, as_mcq)
         chosen = _chosen_candidate(data, cands)
-        if answer is None and chosen and chosen["canon"]:
-            answer = _map_to_option(chosen["canon"], chosen["display"], options, as_mcq)
+        # If the judge gave no parseable answer, fall back to the junior it endorsed
+        # (or junior 1 as a last resort) before the constrained option-pick call.
+        ref = chosen or (cands[0] if cands else None)
+        if answer is None and ref and ref["canon"]:
+            answer = _map_to_option(ref["canon"], ref["display"], options, as_mcq)
         if answer is None:
             answer = _choose_option_fallback(arbiter, q, options, [arbiter]) or (
                 options[find_uncertain_option(options) or 0] if options else "Uncertain")
 
         pu = _to_zero_based(data.get("premises_used"), len(q.premises or []))
         explanation = str(data.get("explanation", "")).strip()
-        if not pu and chosen:
-            pu = chosen["premises_used"]
-        if not explanation and chosen:
-            explanation = chosen["explanation"]
+        # Backfill premises/explanation ONLY from a candidate whose answer maps to the
+        # SAME option we are submitting — otherwise the citations/explanation would
+        # justify a different option than `answer` (mirrors the reference
+        # cascade.finalize_judged `c.answer == win` guard). The judge's explicit pick
+        # is preferred when it also matches.
+        support = next(
+            (c for c in ([chosen] if chosen else []) + cands
+             if c and _map_to_option(c["canon"], c["display"], options, as_mcq) == answer),
+            None,
+        )
+        if not pu and support:
+            pu = support["premises_used"]
+        if not explanation and support:
+            explanation = support["explanation"]
         if not pu:
             pu = _premises_used(
                 arbiter, explanation, list(q.premises or []), q.query, answer,
@@ -550,10 +567,17 @@ def _arbiter_free_form(gen_specs, arbiter: LLMClient, q: PredictQuery) -> Predic
         answer = (chosen["answer"] if chosen else "") or (cands[0]["answer"] if cands else "Uncertain")
     pu = _to_zero_based(data.get("premises_used"), len(premises))
     explanation = str(data.get("explanation", "")).strip()
-    if not pu and chosen:
-        pu = chosen["premises_used"]
-    if not explanation and chosen:
-        explanation = chosen["explanation"]
+    # Only borrow premises/explanation from a junior whose answer equals the final
+    # answer, so they never describe a different value than the one submitted.
+    support = next(
+        (c for c in ([chosen] if chosen else []) + cands
+         if c and c["answer"].strip() and c["answer"].strip().lower() == answer.strip().lower()),
+        None,
+    )
+    if not pu and support:
+        pu = support["premises_used"]
+    if not explanation and support:
+        explanation = support["explanation"]
     if not explanation:
         explanation = f"The answer is {answer}."
     return PredictResult(
