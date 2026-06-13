@@ -222,5 +222,39 @@ def test_batch_list_input():
     assert [o["query_id"] for o in out] == ["A", "B"]
 
 
+def test_arbiter_does_not_borrow_mismatched_junior_premises(monkeypatch):
+    """#3 regression: when the judge's answer differs from a junior's, the submitted
+    premises_used/explanation must NOT be copied from that mismatched junior — they
+    would justify a different option than the answer we send. Only a junior whose
+    answer maps to the SAME option may supply them."""
+    monkeypatch.setenv("LOGIC_MODE", "arbiter")
+    import gateway.logic_adapter as la
+    from gateway.schema import PredictQuery
+
+    cands = [
+        {"label": "j1", "canon": "No", "display": "No", "answer_raw": "No",
+         "premises_used": [0], "explanation": "Premise 1 contradicts the claim."},
+        {"label": "j2", "canon": "Yes", "display": "Yes", "answer_raw": "Yes",
+         "premises_used": [1], "explanation": "Premise 2 entails the claim."},
+    ]
+    monkeypatch.setattr(la, "_run_generators", lambda gen_specs, record: cands)
+    # Judge answers "Yes" but omits chosen/premises_used/explanation (a realistic
+    # terse thinking-model verdict). chosen is absent -> _chosen_candidate -> None.
+    monkeypatch.setattr(la, "_chat", lambda *a, **k: '{"answer": "Yes"}')
+
+    judges = [
+        _stub("qwen-4b", 1.0, "4b", "generator"),
+        _stub("gemma-e2b", 1.0, "4b", "generator"),
+        _stub("gemma-8b-judge", 1.5, "8b", "judge"),
+    ]
+    q = PredictQuery(query_id="MM1", type="type1", query="Entailed?",
+                     premises=["All A are B.", "x is A."], options=["Yes", "No", "Uncertain"])
+    r = la.answer_type1(judges, q)
+    assert r.answer == "Yes"
+    # Premises/explanation come from the junior that ALSO answered Yes, never the "No" one.
+    assert r.premises_used == [1]
+    assert "contradicts" not in r.explanation
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

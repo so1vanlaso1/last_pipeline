@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from . import _paths  # noqa: F401  (side-effect: put physic_pipeline/src on sys.path)
 from .schema import PredictQuery, PredictResult, Reasoning
-from .units import latex_to_ascii, to_ascii_unit
+from .units import latex_to_ascii, to_ascii_answer, to_ascii_unit
 from .vllm_client import LLMClient
 
 _UNCERTAIN = {"", "uncertain", "unknown"}
@@ -87,13 +87,13 @@ class PhysicsAdapter:
         req = PredictRequest(question=question, type="physics")
         resp = self.pipeline.predict(req)
 
-        answer = str(resp.answer or "").strip()
+        answer = to_ascii_answer(resp.answer)
         unit = to_ascii_unit(resp.unit)
         steps: List[str] = [str(s) for s in (resp.cot or [])]
         explanation = (resp.explanation or "").strip() or "Computed from the stated physical quantities."
 
         if answer.lower() in _UNCERTAIN and self.fallback_enabled:
-            fb = self._llm_fallback(question)
+            fb = self._llm_fallback(question, q.query_id)
             if fb is not None:
                 answer, unit, fb_steps = fb
                 steps = fb_steps or steps
@@ -115,7 +115,7 @@ class PhysicsAdapter:
         )
 
     # ── guarded numeric fallback ──────────────────────────────────────────────
-    def _llm_fallback(self, question: str):
+    def _llm_fallback(self, question: str, query_id: str = ""):
         system = (
             "You are a physics problem solver for circuits and electrostatics. "
             "Solve the problem step by step, then return JSON only with these fields: "
@@ -125,12 +125,18 @@ class PhysicsAdapter:
             "Do not include the unit inside the answer field."
         )
         try:
-            data = self.client.chat_json(system, f"Problem: {question}", max_tokens=768)
+            # log_context routes this call into serve/logs/log.txt — without it the
+            # Type 2 physics fallback was invisible in the model I/O log (the log
+            # showed only Type 1 stages, making physics look like it never ran).
+            data = self.client.chat_json(
+                system, f"Problem: {question}", max_tokens=768,
+                log_context=f"type2 query_id={query_id or 'q'} stage=physics.fallback",
+            )
         except Exception:
             data = None
         if not isinstance(data, dict):
             return None
-        answer = str(data.get("answer", "")).strip()
+        answer = to_ascii_answer(data.get("answer"))
         if not answer or answer.lower() in _UNCERTAIN:
             return None
         unit = to_ascii_unit(str(data.get("unit", "")))
@@ -139,7 +145,7 @@ class PhysicsAdapter:
 
     def _fallback_or_uncertain(self, q: PredictQuery, reason: str) -> PredictResult:
         if self.fallback_enabled:
-            fb = self._llm_fallback(latex_to_ascii(q.query or ""))
+            fb = self._llm_fallback(latex_to_ascii(q.query or ""), q.query_id)
             if fb is not None:
                 answer, unit, steps = fb
                 return PredictResult(

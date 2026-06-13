@@ -188,10 +188,21 @@ class Residency:
             try:
                 yield True
             finally:
-                self._sleep(self._judge)
-                self._judge_awake = False
-                for g in self._gens:
-                    self._wake(g)
+                # Symmetric to ensure_generators: only wake the generators once the
+                # judge is CONFIRMED back asleep. If its /sleep does not confirm,
+                # waking the 4B generators on top of the still-resident 8B judge
+                # would put 8+4+4=16B on the GPU (breaks the <=8B rule, risks OOM).
+                # Leave _judge_awake=True so the next ensure_generators() retries the
+                # sleep (and raises if it still fails) instead of silently co-loading.
+                if self._sleep(self._judge):
+                    self._judge_awake = False
+                    for g in self._gens:
+                        self._wake(g)
+                else:
+                    log.critical(
+                        "residency: judge would NOT sleep on judge() exit — NOT waking "
+                        "generators (GPU would exceed 8B). Generators stay asleep until "
+                        "the next query's ensure_generators() can evict the judge.")
 
 
 _manager: Optional[Residency] = None
