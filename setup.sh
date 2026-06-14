@@ -59,10 +59,12 @@ MODEL_ID="${MODEL_ID:-google/gemma-4-E4B-it}"
 # the 0.19.1 wheel is a CUDA-12 build for older drivers (up to CUDA 12.9). Auto-detect
 # the runtime CUDA major from nvidia-smi and default accordingly (operator override wins).
 if [ -z "${VLLM_VERSION:-}" ]; then
-    CUDA_MAJOR="$(nvidia-smi --query-gpu=cuda_version --format=csv,noheader 2>/dev/null | head -n1 | cut -d. -f1 | tr -d '[:space:]')"
+    CUDA_MAJOR="$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \([0-9]*\).*/\1/p' | head -n1)"
     if [ -z "$CUDA_MAJOR" ]; then
-        # Fallback: parse the 'CUDA Version: NN.N' field from plain nvidia-smi.
-        CUDA_MAJOR="$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: \([0-9]*\).*/\1/p' | head -n1)"
+        CUDA_MAJOR="$(nvidia-smi --query-gpu=cuda_version --format=csv,noheader 2>/dev/null | head -n1 | cut -d. -f1 | tr -d '[:space:]')"
+    fi
+    if ! [[ "$CUDA_MAJOR" =~ ^[0-9]+$ ]]; then
+        CUDA_MAJOR=""
     fi
     if [ -n "$CUDA_MAJOR" ] && [ "$CUDA_MAJOR" -lt 13 ] 2>/dev/null; then
         VLLM_VERSION="0.19.1"   # CUDA-12 box → pinned cu12 wheel
