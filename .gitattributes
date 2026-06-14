@@ -1,0 +1,16 @@
+# Shell scripts MUST stay LF — they run on the Linux GPU box. CRLF makes bash
+# read `set -euo pipefail\r` and die before the first echo (silent no-op setup).
+*.sh    text eol=lf
+*.bash  text eol=lf
+
+# Other text files: let git normalize to LF in the repo.
+*.py    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.txt   text eol=lf
+*.md    text eol=lf
+
+# Binary — never touch.
+*.pdf   binary
+*.png   binary
+*.jpg   binary
