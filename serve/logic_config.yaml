@@ -17,7 +17,22 @@
 #        ▼
 #     deterministic code → the competition result object (Section 4 schema)
 #
-# Type 2 (physics) uses the FIRST generator for its optional LLM calls.
+# Type 2 flow (physics solver-first generate->judge):
+#
+#     Physics question
+#        -> deterministic physics solver produces the first candidate answer
+#        -> the two 4B generator models answer concurrently using the deterministic
+#           answer as reference only
+#        -> the generators are put to sleep and the 8B judge is woken
+#        -> the judge solves independently, checks all three candidates
+#           (deterministic + two LLM generators), and emits the final answer/unit
+#        -> deterministic gateway code builds the competition result object
+#
+# This file is named `logic_config.yaml` for historical reasons. In the serving
+# gateway it is the shared vLLM line-up config for BOTH Type 1 and Type 2.
+# Do not create a separate physics model-env file unless you also change
+# gateway/config.py and run_server.sh; the serve folder is intentionally the only
+# place where LLM env/model lineup is set.
 #
 # ── THE LINE-UP (param count the committee counts = TOTAL params) ────────────
 #   Qwen/Qwen3-4B                 4B   (ungated, text, dense)     generator (non-thinking)
@@ -51,12 +66,15 @@
 #   (bitsandbytes NF4) as a fallback — that is the only other precision lever.
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Logic flow:
+# Type 1 logic flow:
 #   arbiter — generators think → the judge rules → code builds the submission
 #             object. With no role tags: every model generates and the highest-
 #             weight one arbitrates; a single-model line-up makes two passes
 #             (strict + skeptical) and self-judges.
 #   vote    — the cascade's weighted soft vote (no judge).
+#
+# Type 2 physics flow always uses the same role-tagged line-up when
+# PHYSICS_CASCADE=1: deterministic solver -> two generators -> judge.
 mode: arbiter
 
 # Disk swap (env SWAP overrides). When true (default) and the line-up has a
@@ -127,4 +145,4 @@ models:
 
 # ── Strict-8B alternatives (kept for reference) ──────────────────────────────
 # Line-up B (single Gemma-4-E4B, two passes + self-judge): one model, role judge.
-# Line-up C (Qwen3.5-4B alone): smallest, zero ambiguity, role judge.
+# Line-up C (Qwen3-4B alone): smallest, zero ambiguity, role judge.

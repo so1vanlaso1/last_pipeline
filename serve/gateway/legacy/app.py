@@ -75,7 +75,7 @@ def primary_client() -> LLMClient:
 def get_physics() -> PhysicsAdapter:
     global _physics
     if _physics is None:
-        _physics = PhysicsAdapter(get_judges())
+        _physics = PhysicsAdapter(primary_client())
         if _physics.import_error:
             log.warning("physics pipeline import failed: %s", _physics.import_error)
         else:
@@ -193,8 +193,8 @@ def _handle_one(raw: Any) -> PredictResult:
     t0 = time.perf_counter()
 
     def _physics() -> PredictResult:
-        # Physics uses the same resident generator/judge line-up as Type 1. Start
-        # from the resting state before the deterministic+generator phase.
+        # Physics talks to the primary GENERATOR; make sure it is awake (not slept
+        # under a judge swap from a prior query) before calling it.
         get_manager().ensure_generators()
         return get_physics().answer(q)
 

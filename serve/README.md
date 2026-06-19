@@ -13,11 +13,24 @@ endpoint**, served via **vLLM**, with one setup script for vast.ai.
         │     Qwen3-4B-Instruct (4B) ┘   {answer, premises_used, explanation}
         │     Gemma-4-E4B (8B)       the judge (thinking): rules on the candidates
         │     → deterministic code builds the result object
-        ├── type2 → physic_pipeline ExactFamaPipeline (first model's vLLM)
+        ├── type2 → deterministic physics solver → two generators → judge
         └── GET /v1/models ── aggregates every resident server's model list
         ▼
   [ { query_id, answer, unit, explanation, premises_used, reasoning } ]
 ```
+
+## One Shared Model Config
+
+There is no separate `physics_config.yaml` in `serve/` because the serve gateway
+launches one shared vLLM line-up for both task types. The filename
+`serve/logic_config.yaml` is historical: it now controls the resident generator
+and judge models used by both Type 1 logic and Type 2 physics.
+
+Physics-specific behavior is controlled by serve env vars, not another model
+file: `PHYSICS_CASCADE=1` enables the solver-first generate->judge flow, and
+`PHYSICS_THINK_TOKENS` controls the physics generator/judge token budget. The
+actual model ids, ports, quantization, thinking defaults, and residency swap live
+only in `serve/logic_config.yaml`.
 
 ## The Type 1 flow (mode: arbiter, default)
 
@@ -40,6 +53,26 @@ endpoint**, served via **vLLM**, with one setup script for vast.ai.
 Line-ups without role tags keep the older behaviour (everything generates, the
 highest-weight model arbitrates; a single model makes a strict + a skeptical
 pass and self-judges). `mode: vote` switches to the cascade's weighted soft vote.
+
+## The Type 2 Flow (Physics)
+
+- **Stage 0 - deterministic candidate.** The gateway first runs
+  `physic_pipeline` through `ExactFamaPipeline`. This produces the deterministic
+  answer, unit, explanation, and public calculation steps. This candidate is kept
+  even when it is `Uncertain`.
+- **Stage 1 - generators.** The same `role: generator` models from
+  `serve/logic_config.yaml` answer concurrently. They receive the original
+  physics question plus the deterministic result as **reference only**, and each
+  must end with JSON containing `answer`, `unit`, `explanation`, `steps`, and
+  `confidence`.
+- **Stage 2 - judge.** The same `role: judge` model is woken through the residency
+  manager. It solves the physics problem independently, then compares the
+  deterministic candidate and both generator candidates before returning final
+  JSON with `chosen`, `answer`, `unit`, `explanation`, and `steps`.
+- **Deterministic output.** Code normalizes the final `answer` and `unit` to ASCII,
+  sets Type 2 `premises_used` to `[]`, and builds `reasoning.type = "cot"`.
+  Fallback order is judge answer -> judge-chosen candidate -> deterministic
+  non-`Uncertain` answer -> first valid generator answer -> `Uncertain`.
 
 ## Compliance (read before your slot)
 
@@ -71,7 +104,7 @@ bash setup.sh          # installs, downloads the line-up, launches vLLMs + gatew
 
 The public URLs are written to `serve/submission/urls.txt`. Stop with
 `bash serve/stop.sh`. Re-launch without reinstalling: `SKIP_INSTALL=1 bash setup.sh`.
-Live Type 1 model calls are appended to `serve/logs/log.txt`; each entry includes
+Live Type 1 and Type 2 model calls are appended to `serve/logs/log.txt`; each entry includes
 the stage, model, loaded-model list for that call, `nvidia-smi` VRAM snapshot,
 system/user input, and raw model output.
 
@@ -99,7 +132,7 @@ GPU sizing for the default line-up:
   an Ada/Hopper/Blackwell GPU); `4bit` = bitsandbytes NF4 (~quarter VRAM, needs
   the `bitsandbytes` package). At 4bit even the all-resident line-up fits ~12 GB.
 
-## Choosing the line-up (`serve/logic_config.yaml`)
+## Choosing the shared line-up (`serve/logic_config.yaml`)
 
 `setup.sh` launches **one vLLM server per model** listed there (each with its
 own `/v1/models`), downloads only those models, and **refuses to start if the
@@ -107,7 +140,7 @@ total-that-exists exceeds `max_resident_b`** (default 8; the shipped swap config
 raises it to 16 explicitly — the *momentary* GPU load is held to 8B by the swap,
 see the compliance section above). The default line-up (Qwen3-4B + Qwen3-4B-Instruct
 + Gemma-4) is **ungated** — no `HF_TOKEN` needed. Each model takes
-`role: generator | judge` (Type 1 flow) plus
+`role: generator | judge` (used by both Type 1 and Type 2) plus
 `params_b` and a vote `weight` (used by `mode: vote`). Each model also takes an
 optional `quantization:` and `thinking:` (true/false) that override the global
 `quantization:` / `thinking:` defaults — so you can, e.g., run the generators in
@@ -118,9 +151,9 @@ verdict. Helper JSON calls (premises_used, option pick) are always no-think.
 
 | Var | Default | Meaning |
 |---|---|---|
-| `LOGIC_CONFIG` | `serve/logic_config.yaml` | the resident model line-up + `mode:` |
+| `LOGIC_CONFIG` | `serve/logic_config.yaml` | shared resident model line-up + Type 1 `mode:` |
 | `LOGIC_MODE` | (yaml `mode:`, default `arbiter`) | `arbiter` (generate→judge) or `vote` |
-| `LOGIC_THINK_TOKENS` | `1024` | max tokens per thinking generate/judge call |
+| `LOGIC_THINK_TOKENS` | `4096` | max tokens per Type 1 thinking generate/judge call |
 | `MAX_RESIDENT_B` | (yaml `max_resident_b:`, default 8) | residency budget the launch guard enforces |
 | `SWAP` | (yaml `swap:`, default `true`) | disk-swap the judge per query instead of holding it resident (24 GB-friendly) |
 | `RESIDENCY_SLEEP_LEVEL` | `1` | `1` = offload slept weights to CPU RAM, copy back on wake (lossless, FP8-safe — default); `2` = discard + reload from disk (4bit/bf16 only; corrupts FP8) |
@@ -134,7 +167,9 @@ verdict. Helper JSON calls (premises_used, option pick) are always no-think.
 | `MAX_NUM_SEQS` | `16` | max concurrent seqs/server — small cuts startup/sampler VRAM (the gateway is sequential) |
 | `NGROK` / `NGROK_DOMAIN` | `1` / – | public tunnel via ngrok (default); pin a reserved static domain with `NGROK_DOMAIN` |
 | `CF_TUNNEL` | `0` | legacy Cloudflare quick-tunnel fallback (only used if ngrok produced no URL) |
-| `PHYSICS_LLM_FALLBACK` | `1` | LLM fills Type 2 answers only when the solver abstains |
+| `PHYSICS_CASCADE` | `1` | Type 2 physics solver-first generate->judge flow |
+| `PHYSICS_THINK_TOKENS` | `LOGIC_THINK_TOKENS` or `4096` | max tokens for Type 2 physics generator/judge calls |
+| `PHYSICS_LLM_FALLBACK` | `1` | legacy Type 2 direct LLM fallback when the cascade is disabled/unavailable and the solver abstains |
 | `GATEWAY_LLM` | `vllm` | set `stub` for the no-GPU wiring test |
 
 ## No-GPU wiring test

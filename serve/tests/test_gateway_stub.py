@@ -86,6 +86,7 @@ def test_type2_physics_shape():
     r = client.post("/predict", json=q).json()[0]
     _check_common(r, "T2_0001")
     assert r["premises_used"] == []              # Type 2 -> empty premises_used
+    assert r["reasoning"]["type"] == "cot"
 
 
 def test_two_model_vote():
@@ -148,6 +149,117 @@ def _stub(model: str, weight: float, cls: str, role: str = ""):
     from gateway.vllm_client import LLMClient
     return (LLMClient(mode="stub", base_url="http://localhost:8001/v1", model=model),
             weight, cls, role)
+
+
+def _physics_adapter_with_stub_lineup(monkeypatch, deterministic):
+    import gateway.physics_adapter as pa
+
+    judges = [
+        _stub("qwen-4b", 1.0, "4b", "generator"),
+        _stub("qwen-4b-instruct", 1.0, "4b", "generator"),
+        _stub("gemma-8b-judge", 1.5, "8b", "judge"),
+    ]
+    adapter = pa.PhysicsAdapter(judges)
+    monkeypatch.setattr(
+        pa.PhysicsAdapter,
+        "_deterministic_candidate",
+        lambda self, q, question: deterministic,
+    )
+    return adapter
+
+
+def test_type2_cascade_uses_judge_answer(monkeypatch):
+    """Type 2 now runs deterministic -> two generators -> physics judge."""
+    import gateway.physics_adapter as pa
+    from gateway.schema import PredictQuery
+
+    deterministic = pa._candidate(
+        label="deterministic", source="deterministic", answer="4", unit="A",
+        explanation="Deterministic solver answer.", steps=["solver step"], confidence=0.9,
+    )
+    adapter = _physics_adapter_with_stub_lineup(monkeypatch, deterministic)
+    q = PredictQuery(query_id="P-JUDGE", type="type2", query="Find the current.")
+
+    r = adapter.answer(q)
+    assert r.answer == "6"
+    assert r.unit == "A"
+    assert r.premises_used == []
+    assert r.reasoning.type == "cot"
+    assert "senior physics arbiter" in r.explanation.lower()
+
+
+def test_type2_judge_prompt_includes_deterministic_candidate(monkeypatch):
+    import gateway.physics_adapter as pa
+    from gateway.schema import PredictQuery
+    from gateway.vllm_client import LLMClient
+
+    deterministic = pa._candidate(
+        label="deterministic", source="deterministic", answer="4", unit="A",
+        explanation="Deterministic solver answer.", steps=["solver step"], confidence=0.9,
+    )
+    adapter = _physics_adapter_with_stub_lineup(monkeypatch, deterministic)
+    judge_users = []
+
+    def fake_chat(self, system, user, **kwargs):
+        stage = kwargs.get("log_context", "")
+        if "physics.judge" in stage:
+            judge_users.append(user)
+            return '{"chosen": "self", "answer": "6", "unit": "A", "explanation": "Judge.", "steps": ["judge step"]}'
+        return '{"answer": "5", "unit": "A", "explanation": "Generator.", "steps": ["gen step"], "confidence": 0.6}'
+
+    monkeypatch.setattr(LLMClient, "chat", fake_chat)
+    adapter.answer(PredictQuery(query_id="P-PROMPT", type="type2", query="Find the current."))
+
+    assert judge_users
+    assert "Deterministic" in judge_users[0]
+    assert "answer = 4 A" in judge_users[0]
+    assert "reference only" in judge_users[0]
+
+
+def test_type2_invalid_judge_falls_back_to_deterministic(monkeypatch):
+    import gateway.physics_adapter as pa
+    from gateway.schema import PredictQuery
+    from gateway.vllm_client import LLMClient
+
+    deterministic = pa._candidate(
+        label="deterministic", source="deterministic", answer="4", unit="A",
+        explanation="Deterministic solver answer.", steps=["solver step"], confidence=0.9,
+    )
+    adapter = _physics_adapter_with_stub_lineup(monkeypatch, deterministic)
+
+    def fake_chat(self, system, user, **kwargs):
+        if "physics.judge" in kwargs.get("log_context", ""):
+            return "not json"
+        return '{"answer": "5", "unit": "A", "explanation": "Generator.", "steps": ["gen step"], "confidence": 0.6}'
+
+    monkeypatch.setattr(LLMClient, "chat", fake_chat)
+    r = adapter.answer(PredictQuery(query_id="P-DET", type="type2", query="Find the current."))
+    assert r.answer == "4"
+    assert r.unit == "A"
+    assert r.reasoning.steps == ["solver step"]
+
+
+def test_type2_uncertain_deterministic_falls_back_to_generator(monkeypatch):
+    import gateway.physics_adapter as pa
+    from gateway.schema import PredictQuery
+    from gateway.vllm_client import LLMClient
+
+    deterministic = pa._candidate(
+        label="deterministic", source="deterministic", answer="Uncertain", unit="",
+        explanation="Solver abstained.", steps=["solver abstained"], confidence=0.0,
+    )
+    adapter = _physics_adapter_with_stub_lineup(monkeypatch, deterministic)
+
+    def fake_chat(self, system, user, **kwargs):
+        if "physics.judge" in kwargs.get("log_context", ""):
+            return "not json"
+        return '{"answer": "5", "unit": "A", "explanation": "Generator.", "steps": ["gen step"], "confidence": 0.6}'
+
+    monkeypatch.setattr(LLMClient, "chat", fake_chat)
+    r = adapter.answer(PredictQuery(query_id="P-GEN", type="type2", query="Find the current."))
+    assert r.answer == "5"
+    assert r.unit == "A"
+    assert r.reasoning.steps == ["gen step"]
 
 
 def test_split_lineup_uses_role_tags():

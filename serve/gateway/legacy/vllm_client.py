@@ -304,17 +304,8 @@ def _stub_completion(system: str, user: str) -> str:
         ans = "A" if has_options else "Yes"
         return ('{"chosen": 1, "answer": "%s", "premises_used": [1, 2], '
                 '"explanation": "Arbiter re-derives the answer from premises 1 and 2."}' % ans)
-    if "senior physics arbiter" in s:                          # physics cascade judge
-        return ('{"chosen": "self", "answer": "6", "unit": "A", '
-                '"explanation": "The senior physics arbiter computes the value directly.", '
-                '"steps": ["Solve independently.", "Compare deterministic and junior answers."]}')
     if "senior arbiter" in s:                                  # arbiter (free-form)
         return '{"chosen": 1, "answer": "2", "premises_used": [1, 2], "explanation": "Arbiter stub."}'
-    if "deterministic solver answer" in s:                     # physics cascade generator
-        return ('{"answer": "5", "unit": "A", '
-                '"explanation": "Junior physics calculation uses the provided reference only as a check.", '
-                '"steps": ["Read quantities.", "Compute the requested value."], '
-                '"confidence": 0.6}')
     if "physics problem solver" in s:                          # physics LLM fallback
         return '{"answer": "5", "unit": "A", "steps": ["Stub physics fallback."]}'
     if "a number or short text" in s or "final answer as a number or short text" in s:
