@@ -21,6 +21,8 @@ cheap JSON fallback call (primary model) that never changes the voted answer.
 from __future__ import annotations
 
 import concurrent.futures
+import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import _paths  # noqa: F401  (side-effect: put logic_pipeline/src on sys.path)
@@ -38,7 +40,8 @@ from .vllm_client import LLMClient, extract_json_object, extract_last_json_objec
 # Cascade IP (pure-python modules: re + dataclasses, no torch).
 from cascade import finalize_by_vote  # type: ignore
 from prompts import (  # type: ignore
-    build_user, canonicalize, parse_reply, rules_for, system_for,
+    build_user, canonicalize, canonicalize_ynn, classify_type1_mode,
+    entailment_veto, parse_reply, rules_for, system_for,
 )
 from schema import AnswerType, ModelReply, Record  # type: ignore
 
@@ -183,6 +186,134 @@ def _plain_free_form_answer(answer: Any) -> str:
     return to_plain_numeric_answer(text) or text
 
 
+# ── Provability backstop ─────────────────────────────────────────────────────
+# For provability/sufficiency questions ("do the premises prove/establish/guarantee
+# X?", "does X satisfy every requirement?") a missing/unsatisfied required condition
+# means No, NOT Uncertain (the dataset convention). We collapse a model "Unknown" to
+# "No" UNLESS the model flagged a genuine premise contradiction (then Uncertain is
+# correct). HYBRID gate: the deterministic regex governs the collapse; the model's
+# self-reported question_mode can only WIDEN it on questions with no entailment veto.
+_CONTRADICTION_FALSE_FLAG_RE = re.compile(
+    r"no\s+contradiction|not\s+a\s+contradiction|does\s+not\s+contradict"
+    r"|do\s+not\s+contradict|without\s+contradiction|no\s+conflict",
+    re.IGNORECASE,
+)
+_CONTRADICTION_RE = re.compile(
+    r"(?:premise|p)\.?\s*\d+\b.*\bcontradict",
+    re.IGNORECASE,
+)
+_CONTRADICTION_PAIR_RE = re.compile(
+    r"(?:premise|p)\.?\s*\d+\s+and\s+(?:premise|p)\.?\s*\d+\s+are\s+"
+    r"(?:inconsistent|mutually\s+exclusive|opposing|contradictory|in\s+conflict)",
+    re.IGNORECASE,
+)
+
+
+def has_real_contradiction(explanation: str) -> bool:
+    """Strict: only a clearly-stated premise-vs-premise contradiction counts, and an
+    explicit 'no contradiction' phrasing vetoes it. Used so a genuine contradiction
+    keeps the answer Uncertain even on a provability question."""
+    text = explanation or ""
+    if _CONTRADICTION_FALSE_FLAG_RE.search(text):
+        return False
+    return bool(_CONTRADICTION_RE.search(text) or _CONTRADICTION_PAIR_RE.search(text))
+
+
+def _is_contradiction(data: Dict[str, Any], explanation: str) -> bool:
+    flag = data.get("conflict")
+    if isinstance(flag, str):
+        flag = flag.strip().lower() in ("true", "yes", "1")
+    return bool(flag) or has_real_contradiction(explanation)
+
+
+def _provability_gate(query: str, options: List[str], data: Dict[str, Any]) -> bool:
+    """True when the Uncertain->No collapse applies: the regex classifies the question
+    as provability, OR the model self-labeled provability AND no entailment veto fires
+    (the veto always wins, bounding regression on genuine-Uncertain questions)."""
+    if classify_type1_mode(query or "", list(options or [])) == "provability":
+        return True
+    mode = str(data.get("question_mode", "")).strip().lower()
+    return mode.startswith("prov") and not entailment_veto(query or "")
+
+
+def _prov_clause(query: str, options=None) -> str:
+    """A judge/reconcile prompt clause for provability questions (gated on the regex)."""
+    if classify_type1_mode(query or "", list(options or [])) != "provability":
+        return ""
+    return (
+        " NOTE: this is a PROVABILITY question - a missing, unstated, unsatisfied, or "
+        "directly negated required step means the answer is No (NOT 'Not Given'). Use "
+        "'Not Given' ONLY for a genuine contradiction between premises (then set "
+        "conflict=true and name the two premises). Never turn a well-supported No into "
+        "'Not Given'."
+    )
+
+
+# JSON fields the model reports for non-MCQ yes/no questions, read by the backstop.
+_YNN_JSON_EXTRA = (
+    ', "question_mode": <"provability" if the question asks whether the premises '
+    'prove/establish/guarantee a claim or whether something satisfies every '
+    'requirement, else "entailment">, '
+    '"conflict": <true ONLY if two premises directly contradict so that neither '
+    'Yes nor No can be determined; else false>'
+)
+
+
+def _json_extra(record: Record) -> str:
+    return "" if record.answer_type == AnswerType.MCQ else _YNN_JSON_EXTRA
+
+
+# ── Tier 3 (gated, offline-validated): question-named premise inclusion ───────
+_WORD_RE = re.compile(r"[a-z0-9]+")
+_PREMISE_STOPWORDS = frozenset({
+    "does", "have", "having", "with", "that", "this", "case", "from", "into",
+    "their", "they", "them", "then", "than", "what", "which", "when", "where",
+    "premise", "premises", "prove", "proves", "establish", "guarantee", "satisfy",
+    "every", "requirement", "requirements", "should", "would", "could", "will",
+})
+
+
+def _content_terms(text: str) -> set:
+    return {w for w in _WORD_RE.findall((text or "").lower())
+            if len(w) >= 4 and w not in _PREMISE_STOPWORDS}
+
+
+def add_question_named_premises(record: Record, premises_used: List[int]) -> List[int]:
+    """Tier 3: also cite the fact AND the one immediate consequence rule for any
+    feature explicitly NAMED in the question (the T1_0008 'optical camera' convention).
+    Conservative lexical match. OFF by default — enable via LOGIC_PREMISE_AUGMENT=1
+    only after offline validation that it raises p2 without regressions."""
+    premises = list(record.premises_nl or [])
+    q_terms = _content_terms(record.question_nl)
+    if not q_terms or not premises:
+        return sorted({i for i in premises_used if 0 <= i < len(premises)})
+    sel = {i for i in premises_used if 0 <= i < len(premises)}
+    named: set = set()
+    for i, p in enumerate(premises):
+        if re.search(r"\bif\b.*\bthen\b", p, re.IGNORECASE):
+            continue                                   # a fact (no if/then)
+        hit = _content_terms(p) & q_terms
+        if hit:
+            sel.add(i)
+            named |= hit
+    for i, p in enumerate(premises):                   # one-hop rules off a named feature
+        m = re.search(r"\bif\b(.*?)\bthen\b", p, re.IGNORECASE | re.DOTALL)
+        if m and (_content_terms(m.group(1)) & named):
+            sel.add(i)
+    return sorted(sel)
+
+
+def _maybe_augment_premises(record, q: PredictQuery, options, data, pu: List[int]) -> List[int]:
+    """Apply Tier-3 question-named premise inclusion when enabled (LOGIC_PREMISE_AUGMENT=1)
+    and the question is provability mode. `record` may be None for the free-form path."""
+    if os.getenv("LOGIC_PREMISE_AUGMENT") != "1":
+        return pu
+    if not _provability_gate(q.query, list(options or []), data or {}):
+        return pu
+    rec = record if record is not None else _make_record(q, as_mcq=False)
+    return add_question_named_premises(rec, pu)
+
+
 def _choice(judges: List[Judge], q: PredictQuery) -> PredictResult:
     options = list(q.options or [])
     as_mcq = not looks_like_ynn(options)        # YNN examiner for Yes/No/Uncertain
@@ -193,11 +324,18 @@ def _choice(judges: List[Judge], q: PredictQuery) -> PredictResult:
     display = final.answer_display
     why = final.explanation
 
+    # Provability backstop (vote path): unprovable claim -> No, unless a genuine
+    # premise contradiction is named in the explanation.
+    prov = (not as_mcq) and classify_type1_mode(q.query, options) == "provability"
+    if prov and canon == "Unknown" and not has_real_contradiction(why or ""):
+        canon, display = "No", "No"
+
     answer = _map_to_option(canon, display, options, as_mcq)
     if answer is None:
         loaded_clients = [j[0] for j in judges]
+        fb = find_no_option(options) if prov else find_uncertain_option(options)
         answer = _choose_option_fallback(judges[0][0], q, options, loaded_clients) or (
-            options[find_uncertain_option(options) or 0] if options else (display or "Uncertain")
+            options[fb if fb is not None else 0] if options else (display or ("No" if prov else "Uncertain"))
         )
 
     loaded_clients = [j[0] for j in judges]
@@ -315,6 +453,10 @@ def _free_form(client: LLMClient, q: PredictQuery) -> PredictResult:
     zero = [int(x) - 1 for x in (data.get("premises_used") or []) if str(x).strip().lstrip("-").isdigit()]
     pu = clamp_indices(zero, len(premises))
     explanation = str(data.get("explanation", "")).strip() or f"The answer is {answer}."
+    # Provability backstop (vote path, free-form yes/no): unprovable claim -> No.
+    if classify_type1_mode(q.query) == "provability" and canonicalize_ynn(answer) == "Unknown" \
+            and not has_real_contradiction(explanation):
+        answer = "No"
     return PredictResult(
         query_id=q.query_id, answer=answer, unit="", explanation=explanation,
         premises_used=pu, reasoning=_fol_reasoning(explanation, pu),
@@ -365,7 +507,8 @@ def _gen_format(record: Record) -> str:
         "reply with ONE JSON object on its own line and nothing after it:\n"
         '{"answer": ' + _answer_space(record)
         + ', "premises_used": [<1-based numbers of the premises you actually used>], '
-        '"explanation": <2-3 sentences citing those premise numbers>}'
+        '"explanation": <2-3 sentences citing those premise numbers>'
+        + _json_extra(record) + '}'
     )
 
 
@@ -488,11 +631,12 @@ def _reconcile_choice(
         "premises, watching the usual traps (converse/inverse of a rule, 'some' vs "
         "'all', and answering 'No' when only 'Not Given' is proven). Change your answer "
         "to match the juniors UNLESS you can cite a specific premise that proves them "
-        "wrong.\n\nApply these examiner rules:\n" + rules_for(record)
+        "wrong.\n\nApply these examiner rules:\n" + rules_for(record) + _prov_clause(q.query, q.options)
         + "\n\nFinish your reply with ONE JSON object on its own line:\n"
         '{"chosen": <1 or 2>, "answer": ' + _answer_space(record)
         + ', "premises_used": [<1-based premise numbers you determine are needed>], '
-        '"explanation": <2-4 sentences citing those premises>}'
+        '"explanation": <2-4 sentences citing those premises>'
+        + _json_extra(record) + '}'
     )
     user = (
         build_user(record)
@@ -537,7 +681,7 @@ def _reconcile_free_form(
         'with ONE JSON object: {"chosen": <1 or 2>, "answer": <a number or short text>, '
         '"premises_used": [<1-based>], "explanation": <1-2 sentences>}. '
         "If the answer is numeric, use an unrounded plain ASCII decimal or integer only."
-    )
+    ) + _prov_clause(q.query)
     user = (
         guser
         + f"\n\nBOTH juniors agree the answer is: {consensus_display}."
@@ -577,11 +721,12 @@ def _arbiter_choice(gen_specs, arbiter: LLMClient, q: PredictQuery) -> PredictRe
         "— use the juniors' work only as a reference, do NOT copy it. If BOTH juniors give "
         "the SAME answer, treat that agreement as strong evidence it is correct and "
         "override it ONLY if you can cite a specific premise that proves them wrong.\n\n"
-        "Apply these examiner rules:\n" + rules_for(record)
+        "Apply these examiner rules:\n" + rules_for(record) + _prov_clause(q.query, q.options)
         + "\n\nFinish your reply with ONE JSON object on its own line:\n"
         '{"chosen": <1 or 2 — the junior you judged correct>, "answer": ' + _answer_space(record)
         + ', "premises_used": [<1-based premise numbers you determine are needed>], '
-        '"explanation": <2-4 sentences in your own words citing those premises>}'
+        '"explanation": <2-4 sentences in your own words citing those premises>'
+        + _json_extra(record) + '}'
     )
     user = build_user(record) + "\n\nJunior answers (reference only):\n" + _render_candidates(cands)
 
@@ -601,6 +746,11 @@ def _arbiter_choice(gen_specs, arbiter: LLMClient, q: PredictQuery) -> PredictRe
 
         ans_raw = str(data.get("answer", "")).strip()
         canon, display = canonicalize(ans_raw, record) if ans_raw else (None, "")
+        # Provability backstop: an unprovable provability claim is No, not Unknown,
+        # unless a genuine premise contradiction was flagged (then Unknown stands).
+        prov = (not as_mcq) and _provability_gate(q.query, options, data)
+        if prov and canon == "Unknown" and not _is_contradiction(data, str(data.get("explanation", ""))):
+            canon, display = "No", "No"
         answer = _map_to_option(canon, display, options, as_mcq)
         chosen = _chosen_candidate(data, cands)
         # If the judge gave no parseable answer, fall back to the junior it endorsed
@@ -609,8 +759,9 @@ def _arbiter_choice(gen_specs, arbiter: LLMClient, q: PredictQuery) -> PredictRe
         if answer is None and ref and ref["canon"]:
             answer = _map_to_option(ref["canon"], ref["display"], options, as_mcq)
         if answer is None:
+            fb = find_no_option(options) if prov else find_uncertain_option(options)
             answer = _choose_option_fallback(arbiter, q, options, [arbiter]) or (
-                options[find_uncertain_option(options) or 0] if options else "Uncertain")
+                options[fb if fb is not None else 0] if options else ("No" if prov else "Uncertain"))
 
         pu = _to_zero_based(data.get("premises_used"), len(q.premises or []))
         explanation = str(data.get("explanation", "")).strip()
@@ -633,6 +784,7 @@ def _arbiter_choice(gen_specs, arbiter: LLMClient, q: PredictQuery) -> PredictRe
                 arbiter, explanation, list(q.premises or []), q.query, answer,
                 q.query_id, [arbiter],
             )
+        pu = _maybe_augment_premises(record, q, options, data, pu)
     if not explanation:
         explanation = f"Based on the premises, the answer is {answer}."
     return PredictResult(
@@ -652,7 +804,7 @@ def _arbiter_free_form(gen_specs, arbiter: LLMClient, q: PredictQuery) -> Predic
         "If the answer is numeric, the answer field must be an unrounded plain "
         "ASCII decimal or integer only; never use LaTeX, fractions, radicals, "
         "currency symbols, commas, scientific notation, or units inside the answer field."
-    )
+    ) + _prov_clause(q.query)
     guser = f"Premises:\n{numbered}\n\nQuestion: {q.query}"
 
     def gen(spec):
@@ -689,7 +841,7 @@ def _arbiter_free_form(gen_specs, arbiter: LLMClient, q: PredictQuery) -> Predic
         "If the answer is numeric, the answer field must be an unrounded plain "
         "ASCII decimal or integer only; never use LaTeX, fractions, radicals, "
         "currency symbols, commas, scientific notation, or units inside the answer field."
-    )
+    ) + _prov_clause(q.query)
     auser = guser + "\n\nJunior answers (reference only):\n" + "\n".join(
         f"Junior {i} ({c['label']}): answer={c['answer'] or 'N/A'}; "
         f"premises_used={[j + 1 for j in c['premises_used']]}; explanation={c['explanation'] or '(none)'}"
@@ -715,6 +867,11 @@ def _arbiter_free_form(gen_specs, arbiter: LLMClient, q: PredictQuery) -> Predic
         answer = (chosen["answer"] if chosen else "") or (cands[0]["answer"] if cands else "Uncertain")
     pu = _to_zero_based(data.get("premises_used"), len(premises))
     explanation = str(data.get("explanation", "")).strip()
+    # Provability backstop (free-form yes/no): unprovable claim -> No, unless a
+    # genuine premise contradiction was flagged.
+    prov = _provability_gate(q.query, [], data)
+    if prov and canonicalize_ynn(answer) == "Unknown" and not _is_contradiction(data, explanation):
+        answer = "No"
     # Only borrow premises/explanation from a junior whose answer equals the final
     # answer, so they never describe a different value than the one submitted.
     support = next(
@@ -728,8 +885,9 @@ def _arbiter_free_form(gen_specs, arbiter: LLMClient, q: PredictQuery) -> Predic
         explanation = support["explanation"]
     if not explanation:
         explanation = f"The answer is {answer}."
+    pu = _maybe_augment_premises(None, q, [], data, pu)
     return PredictResult(
-        query_id=q.query_id, answer=answer or "Uncertain", unit="", explanation=explanation,
+        query_id=q.query_id, answer=answer or ("No" if prov else "Uncertain"), unit="", explanation=explanation,
         premises_used=pu, reasoning=_fol_reasoning(explanation, pu),
     )
 

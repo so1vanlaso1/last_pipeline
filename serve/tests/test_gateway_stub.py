@@ -724,5 +724,225 @@ def test_type1_free_form_arbiter_reconciles(monkeypatch):
     assert r.answer == "42"
 
 
+# ── Provability answer-label fix (hybrid detection) ──────────────────────────
+
+def _ynn_lineup():
+    return [
+        _stub("qwen-4b", 1.0, "4b", "generator"),
+        _stub("gemma-e2b", 1.0, "4b", "generator"),
+        _stub("gemma-8b-judge", 1.5, "8b", "judge"),
+    ]
+
+
+_UNKNOWN_CANDS = [
+    {"label": "j1", "canon": "Unknown", "display": "Not Given", "answer_raw": "Not Given",
+     "premises_used": [0], "explanation": "a"},
+    {"label": "j2", "canon": "Unknown", "display": "Not Given", "answer_raw": "Not Given",
+     "premises_used": [0], "explanation": "b"},
+]
+
+
+def _choice_query(query, options=("Yes", "No", "Uncertain")):
+    from gateway.schema import PredictQuery
+    return PredictQuery(
+        query_id="PV", type="type1", query=query,
+        premises=["If audit-ready and a manager signs off, then the case is closed.",
+                  "The case is audit-ready."],
+        options=list(options),
+    )
+
+
+def _run_choice(monkeypatch, query, judge_json, cands=None, options=("Yes", "No", "Uncertain")):
+    monkeypatch.setenv("LOGIC_MODE", "arbiter")
+    import gateway.logic_adapter as la
+    monkeypatch.setattr(la, "_run_generators", lambda gs, rec: list(cands or _UNKNOWN_CANDS))
+    monkeypatch.setattr(la, "_chat", lambda *a, **k: judge_json)
+    return la.answer_type1(_ynn_lineup(), _choice_query(query, options))
+
+
+def test_provability_choice_missing_step_is_no(monkeypatch):
+    """Regex-classified provability + Not Given (no contradiction) -> No."""
+    r = _run_choice(
+        monkeypatch,
+        "Do the premises prove that the Atlas case can be formally closed?",
+        '{"answer": "Not Given", "conflict": false, "premises_used": [1,2], "explanation": "A manager sign-off is not stated."}',
+    )
+    assert r.answer == "No"
+
+
+def test_provability_choice_model_label_widens_backstop(monkeypatch):
+    """Regex misses (no trigger, no veto) but the model self-labels provability and
+    there is no veto -> the backstop still collapses Not Given to No."""
+    r = _run_choice(
+        monkeypatch,
+        "Is the Atlas case ready to wrap up now?",
+        '{"answer": "Not Given", "question_mode": "provability", "conflict": false, "explanation": "A required step is missing."}',
+    )
+    assert r.answer == "No"
+
+
+def test_entailment_veto_blocks_model_widening(monkeypatch):
+    """A clear entailment phrasing vetoes the model's provability self-label, so a
+    genuine Not Given is preserved."""
+    r = _run_choice(
+        monkeypatch,
+        "Does it follow that the Atlas case is closed?",
+        '{"answer": "Not Given", "question_mode": "provability", "explanation": "Neither proved."}',
+    )
+    assert r.answer == "Uncertain"
+
+
+def test_provability_contradiction_stays_uncertain_flag(monkeypatch):
+    """Provability but the model flagged a genuine contradiction -> Uncertain stands."""
+    r = _run_choice(
+        monkeypatch,
+        "Do the premises establish that the River Codex is safe for public release?",
+        '{"answer": "Not Given", "conflict": true, "explanation": "P2 and P5 are mutually exclusive."}',
+    )
+    assert r.answer == "Uncertain"
+
+
+def test_provability_contradiction_stays_uncertain_explanation(monkeypatch):
+    """No conflict flag, but the explanation names a premise-vs-premise contradiction."""
+    r = _run_choice(
+        monkeypatch,
+        "Do the premises establish that the River Codex is safe for public release?",
+        '{"answer": "Not Given", "explanation": "Premise 2 directly contradicts premise 5."}',
+    )
+    assert r.answer == "Uncertain"
+
+
+def test_provability_definite_no_survives(monkeypatch):
+    r = _run_choice(
+        monkeypatch,
+        "Do the premises prove that the Atlas case can be formally closed?",
+        '{"answer": "No", "explanation": "A required step is missing."}',
+    )
+    assert r.answer == "No"
+
+
+def test_entailment_choice_not_given_stays_uncertain(monkeypatch):
+    r = _run_choice(
+        monkeypatch,
+        "Does it follow that the statement holds?",
+        '{"answer": "Not Given", "explanation": "Neither the claim nor its negation is proved."}',
+    )
+    assert r.answer == "Uncertain"
+
+
+def _run_free_form(monkeypatch, query, judge_answer, gen_answer="Uncertain"):
+    monkeypatch.setenv("LOGIC_MODE", "arbiter")
+    import gateway.logic_adapter as la
+    from gateway.schema import PredictQuery
+
+    def fake_chat(client, system, user, **kw):
+        stage = kw.get("stage", "")
+        if "free_form_generator" in stage:
+            return '{"answer": "%s", "premises_used": [1], "explanation": "g"}' % gen_answer
+        if "free_form_judge" in stage:
+            return '{"answer": "%s", "premises_used": [1], "explanation": "A required step is missing."}' % judge_answer
+        return "{}"
+
+    monkeypatch.setattr(la, "_chat", fake_chat)
+    q = PredictQuery(query_id="FF", type="type1", query=query,
+                     premises=["If pick and weight-check then prepared.", "Kappa can pick."],
+                     options=[])
+    return la.answer_type1(_ynn_lineup(), q)
+
+
+def test_provability_free_form_is_no(monkeypatch):
+    r = _run_free_form(
+        monkeypatch,
+        "Does Robot Kappa satisfy every requirement for preparing outbound orders?",
+        judge_answer="Uncertain",
+    )
+    assert r.answer == "No"
+
+
+def test_entailment_free_form_stays_uncertain(monkeypatch):
+    r = _run_free_form(monkeypatch, "Is it true that the order is prepared?", judge_answer="Uncertain")
+    assert r.answer == "Uncertain"
+
+
+# ── Pure-function unit tests ──────────────────────────────────────────────────
+
+def test_classify_type1_mode_and_veto():
+    from prompts import classify_type1_mode, entailment_veto
+
+    provability = [
+        "Do the premises prove that X?",
+        "Do the premises establish that X?",
+        "Does having sensors guarantee Y?",
+        "Does Robot Kappa satisfy every requirement for Z?",
+        "Do the premises support the conclusion that X holds?",
+    ]
+    for q in provability:
+        assert classify_type1_mode(q, None) == "provability", q
+
+    entailment = [
+        "Does it follow that X?",
+        "Is it true that X?",
+        "Can we conclude that X?",
+        "Do the premises entail that X?",
+        "Do the premises imply that X?",
+        "Does Sophia like cats?",
+        "What is the total current?",
+    ]
+    for q in entailment:
+        assert classify_type1_mode(q, None) == "entailment", q
+
+    assert entailment_veto("Does it follow that X?")
+    # The entailment veto wins over an incidental provability verb.
+    assert classify_type1_mode("Does it follow that the premises establish X?", None) == "entailment"
+    # Content options => MCQ; Yes/No(/Uncertain) options stay non-MCQ.
+    assert classify_type1_mode("Which option holds?", ["a cat is here", "no animal", "birds fly"]) == "mcq"
+    assert classify_type1_mode("Do the premises prove X?", ["Yes", "No", "Uncertain"]) == "provability"
+
+
+def test_has_real_contradiction():
+    from gateway.logic_adapter import has_real_contradiction
+
+    assert has_real_contradiction("P2 directly contradicts P5.")
+    assert has_real_contradiction("Premise 2 contradicts premise 5.")
+    assert has_real_contradiction("Premise 2 and premise 5 are mutually exclusive.")
+    assert not has_real_contradiction("There is no contradiction here.")
+    assert not has_real_contradiction("Premise 3 requires a review before proceeding.")
+
+
+def test_build_user_prompt_shapes():
+    from schema import Record, AnswerType
+    from prompts import build_user, rules_for
+
+    prov = Record(id="a", premises_nl=["p"], answer_type=AnswerType.YES_NO_UNKNOWN,
+                  question_nl="Do the premises prove that the case is closed?")
+    ent = Record(id="b", premises_nl=["p"], answer_type=AnswerType.YES_NO_UNKNOWN,
+                 question_nl="Does it follow that X?")
+    assert "ESTABLISH" in build_user(prov)
+    assert "Does the statement logically follow" in build_user(ent)
+    assert "Yes, No, or Not Given" in build_user(ent)
+    rf = rules_for(prov)
+    assert "MODE B" in rf and "Reply in EXACTLY" not in rf
+
+
+def test_add_question_named_premises_includes_named_feature():
+    from gateway.logic_adapter import add_question_named_premises
+    from schema import Record, AnswerType
+
+    premises = [
+        "If a satellite has calibrated thermal sensors, then it can monitor surface temperature.",
+        "If a satellite can monitor surface temperature and has cloud-penetrating radar, then it can support disaster mapping.",
+        "If a satellite supports disaster mapping, then it can provide emergency response data.",
+        "Satellite Vega has calibrated thermal sensors.",
+        "Satellite Vega does not have cloud-penetrating radar.",
+        "Satellite Vega has a high-resolution optical camera.",
+        "All satellites with high-resolution optical cameras can capture daytime images.",
+    ]
+    rec = Record(id="t", premises_nl=premises, answer_type=AnswerType.YES_NO_UNKNOWN,
+                 question_nl="Does having thermal sensors and an optical camera guarantee emergency response data in this case?")
+    out = add_question_named_premises(rec, [0, 1, 2, 3, 4, 5])
+    assert 6 in out                                   # the optical-camera consequence rule
+    assert set([0, 1, 2, 3, 4, 5]).issubset(set(out))  # never drops existing citations
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
