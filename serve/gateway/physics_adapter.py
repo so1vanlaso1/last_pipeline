@@ -366,15 +366,35 @@ class PhysicsAdapter:
             "show your reasoning.\n"
             "STAGE 1 - SOLVE IT YOURSELF: ignore every candidate and solve the problem "
             "from the original question alone. Derive the quantity and its unit from "
-            "first principles.\n"
+            "first principles. For vector quantities (electric field, force), state the "
+            "DIRECTION each contribution points AT THE TARGET POINT before combining "
+            "them, then decide carefully whether they add or cancel (recall: the field "
+            "of a positive charge points away from it, of a negative charge toward it - "
+            "e.g. at the midpoint between +q and -q both fields point the SAME way and "
+            "ADD).\n"
             "STAGE 2 - CROSS-CHECK THE THREE REFERENCES: you are given three candidate "
             "answers for reference ONLY - a deterministic solver and two junior LLM "
             "answers. Compare each against your STAGE 1 result; note where they agree, "
             "where they differ, and why.\n"
             "STAGE 3 - RE-EVALUATE AND DECIDE: do NOT assume your STAGE 1 answer is "
-            "correct. Use the references to recheck your own work; if a reference "
-            "exposes a mistake, correct yourself. If the references are wrong, keep "
-            "your corrected own answer. State the single final answer and its unit.\n"
+            "correct - you are NOT always right, and a single sign or direction slip is "
+            "the most common way to be wrong here. Use the references to recheck your "
+            "work; if one exposes a mistake, correct yourself.\n"
+            "CONSENSUS RULE (very important): if your STAGE 1 answer DISAGREES with the "
+            "deterministic solver while BOTH juniors also land on that same different "
+            "value, treat this 3-way agreement as STRONG evidence that YOUR OWN "
+            "calculation is the one with the error - three independent sources agreeing "
+            "is far more likely right than your lone result. When this happens you MUST: "
+            "(a) assume you made a mistake and spend extra effort to find it; (b) "
+            "re-derive from scratch, scrutinising the most error-prone step - for "
+            "fields/forces, recheck the DIRECTION of every vector at the target point "
+            "and whether the contributions add or cancel; (c) name the exact step you "
+            "got wrong. You may keep your dissenting answer ONLY if you can point to a "
+            "CONCRETE, specific error in the references' actual numbers or steps AND show "
+            "a correct re-derivation that reproduces your value - never override the "
+            "consensus on a vague 'they share a conceptual error'. If you cannot pinpoint "
+            "such a concrete error after re-checking, ADOPT the consensus answer. State "
+            "the single final answer and its unit.\n"
             "Then finish with ONE JSON object and nothing after it: "
             '{"chosen": <"deterministic" or 1 or 2 or "self">, '
             '"answer": <final numerical or symbolic value only>, '
@@ -412,7 +432,114 @@ class PhysicsAdapter:
         data, breadcrumb = self._recover_judge_json(arbiter, text, q)
         cand = _candidate_from_json(arbiter.model, "judge", data)
         cand["debug"] = breadcrumb
+
+        # Consensus safeguard: if the judge produced a usable answer that DISAGREES
+        # with a unanimous reference consensus, give it one more pass to find its own
+        # error or justify the dissent. The reconciled answer is still 8B-authored.
+        consensus = self._reference_consensus(deterministic, generators)
+        if consensus is not None and self._candidate_usable(cand):
+            if self._norm_for_compare(cand.get("answer")) != consensus:
+                log.warning(
+                    "physics judge answer %r dissents from a unanimous reference "
+                    "consensus %r; running one reconciliation pass for query_id=%s",
+                    cand.get("answer"), consensus, q.query_id or "q")
+                recon = self._reconcile_with_consensus(
+                    arbiter, q, question, deterministic, generators, cand, consensus
+                )
+                if recon is not None:
+                    cand = recon
         return cand
+
+    @staticmethod
+    def _norm_for_compare(answer: Any) -> str:
+        """Normalize an answer for equality comparison: a plain decimal for numbers,
+        else lower-cased ASCII text."""
+        plain = to_plain_numeric_answer(answer)
+        if plain is not None:
+            return plain
+        return to_ascii_answer(answer).strip().lower()
+
+    def _reference_consensus(
+        self, deterministic: Dict[str, Any], generators: List[Dict[str, Any]]
+    ) -> Optional[str]:
+        """Return the normalized answer shared by ALL usable references (deterministic
+        solver + juniors) when at least two of them agree on it; else None. This is the
+        strong agreement the judge must not casually contradict."""
+        norms = [
+            self._norm_for_compare(r.get("answer"))
+            for r in (deterministic, *generators)
+            if self._candidate_usable(r)
+        ]
+        if len(norms) < 2:
+            return None
+        return norms[0] if all(n == norms[0] for n in norms) else None
+
+    def _reconcile_with_consensus(
+        self,
+        arbiter: LLMClient,
+        q: PredictQuery,
+        question: str,
+        deterministic: Dict[str, Any],
+        generators: List[Dict[str, Any]],
+        judge_cand: Dict[str, Any],
+        consensus: str,
+    ) -> Optional[Dict[str, Any]]:
+        """One extra judge pass when it dissents from a unanimous reference consensus:
+        force the 8B to re-derive, find its own error (usually a wrong vector direction
+        or sign), and either correct itself to the consensus or justify its dissent with
+        a concrete, specific error in the references. Still fully 8B-authored — no
+        deterministic/generator value is ever substituted directly."""
+        system = (
+            "You are the SENIOR PHYSICS ARBITER re-checking your OWN previous answer. "
+            "All reference solvers - the deterministic solver AND both juniors - AGREE "
+            "on one value, but your previous answer was DIFFERENT. A unanimous reference "
+            "consensus is far more likely correct than your lone result, so ASSUME you "
+            "made a mistake and hunt for it - most often a wrong vector DIRECTION at the "
+            "target point, or a sign (adding when you should cancel, or vice versa). "
+            "Re-derive the problem from scratch, name the exact step you got wrong, and "
+            "give the corrected final answer. Change your answer to match the consensus "
+            "UNLESS you can point to a CONCRETE, reproducible error in the references' "
+            "actual numbers or steps. Finish with ONE JSON object and nothing after it: "
+            '{"chosen": <"deterministic" or 1 or 2 or "self">, '
+            '"answer": <final numerical or symbolic value only>, '
+            '"unit": <ASCII unit, or empty string>, '
+            '"explanation": <2-5 concise public sentences>, '
+            '"steps": [<short public calculation/checking steps>]}. '
+            "The answer field must be a plain ASCII number with no unit; put the unit "
+            "ONLY in the unit field. LaTeX is allowed in explanation and steps."
+        )
+        prev_unit = judge_cand.get("unit")
+        rendered = [_render_candidate("Deterministic", deterministic)]
+        rendered.extend(
+            _render_candidate(f"Junior {i}", cand)
+            for i, cand in enumerate(generators, 1)
+        )
+        user = (
+            f"Problem:\n{question}\n\n"
+            f"Your previous answer was {judge_cand.get('answer')}"
+            f"{(' ' + prev_unit) if prev_unit else ''}, but all references agree on "
+            f"{consensus}.\n\n"
+            "Reference answers (the agreeing consensus):\n"
+            + "\n".join(rendered)
+            + "\n\nFind your error and return the correct final answer."
+        )
+        try:
+            text = arbiter.chat(
+                system,
+                user,
+                max_tokens=_physics_tokens(),
+                log_context=f"type2 query_id={q.query_id or 'q'} stage=physics.judge.reconcile",
+                loaded_models=[arbiter.model],
+            )
+        except Exception:
+            log.exception("physics judge reconcile call failed for query_id=%s", q.query_id or "q")
+            return None
+        data, breadcrumb = self._recover_judge_json(arbiter, text, q)
+        if not self._candidate_usable(data):
+            return None
+        recon = _candidate_from_json(arbiter.model, "judge", data)
+        recon["debug"] = f"reconcile:{breadcrumb}"
+        return recon
 
     @staticmethod
     def _candidate_usable(data: Any) -> bool:
