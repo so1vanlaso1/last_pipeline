@@ -211,6 +211,26 @@ def to_plain_numeric_answer(answer: Any) -> Optional[str]:
     return _format_plain_decimal(dec)
 
 
+def split_trailing_unit(answer: Any) -> tuple[str, str]:
+    """Split a trailing unit off a numeric answer string.
+
+    Returns ``(answer_without_unit, unit_or_empty)``, reusing
+    ``_COMMON_UNIT_SUFFIX_RE`` so it captures exactly the unit that
+    ``to_plain_numeric_answer`` would otherwise strip and DISCARD (including the
+    compound units V/m, N/C, rad/s already in that pattern). Models sometimes emit
+    the unit inside the answer field (e.g. "5 A", "9.1e-31 kg", "3 V/m"); this lets
+    the caller move it into the dedicated unit field instead of losing it. The
+    regex requires a leading space, so a glued "5A" is left intact (returns it
+    unchanged) — never guessed."""
+    a = "" if answer is None else str(answer).strip()
+    if not a:
+        return a, ""
+    m = _COMMON_UNIT_SUFFIX_RE.search(a)
+    if not m:
+        return a, ""
+    return a[: m.start()].strip(), m.group(0).strip().rstrip(".")
+
+
 # ── LaTeX → ASCII pre-extraction normalization (Type 2 physics) ──────────────
 # The committee sends problems in LaTeX; the deterministic physics extractor parses
 # ASCII (e-notation, 'ohm', 'uF', 'R1'). This pass converts the LaTeX our notation

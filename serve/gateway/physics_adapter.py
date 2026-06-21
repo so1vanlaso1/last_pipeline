@@ -14,6 +14,8 @@ serve/logic_config.yaml.
 from __future__ import annotations
 
 import concurrent.futures
+import logging
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import _paths  # noqa: F401  (side-effect: put physic_pipeline/src on sys.path)
@@ -21,12 +23,17 @@ from . import config as cfg
 from .io_log import model_labels
 from .residency import get_manager
 from .schema import PredictQuery, PredictResult, Reasoning
-from .units import latex_to_ascii, to_ascii_answer, to_ascii_unit, to_plain_numeric_answer
-from .vllm_client import LLMClient, extract_last_json_object
+from .units import (
+    latex_to_ascii, split_trailing_unit, to_ascii_answer, to_ascii_unit,
+    to_plain_numeric_answer,
+)
+from .vllm_client import LLMClient, extract_last_json_object, strip_think
 
 Judge = Tuple[LLMClient, float, str, str]
 
 _UNCERTAIN = {"", "uncertain", "unknown"}
+
+log = logging.getLogger("gateway.physics")
 
 
 def _build_settings(base_url: str, model: str, temperature: float = 0.0):
@@ -118,12 +125,21 @@ def _candidate(
     steps: Any = None,
     confidence: Any = 0.5,
 ) -> Dict[str, Any]:
-    ans = to_plain_numeric_answer(answer) or to_ascii_answer(answer)
+    raw_answer = answer
+    unit_text = str(unit or "").strip()
+    # Capture a unit the model crammed into the answer field (e.g. "5 A") instead of
+    # discarding it: to_plain_numeric_answer would strip "A" and lose it otherwise.
+    if not unit_text:
+        answer_text = "" if raw_answer is None else str(raw_answer)
+        stripped, found = split_trailing_unit(answer_text)
+        if found:
+            raw_answer, unit_text = stripped, found
+    ans = to_plain_numeric_answer(raw_answer) or to_ascii_answer(raw_answer)
     return {
         "label": label,
         "source": source,
         "answer": ans,
-        "unit": to_ascii_unit(unit),
+        "unit": to_ascii_unit(unit_text),
         "explanation": str(explanation or "").strip(),
         "steps": _coerce_steps(steps),
         "confidence": _confidence(confidence),
@@ -250,25 +266,34 @@ class PhysicsAdapter:
             return None
         gen_clients = gens[:2] if len(gens) >= 2 else [gens[0], gens[0]]
 
+        # Stage 1: the deterministic answer + the two 4B generators are REFERENCES
+        # ONLY. They are fed to the judge; they are never the final answer.
         try:
             get_manager().ensure_generators()
             generator_candidates = self._run_generators(gen_clients, q, question, deterministic)
         except Exception:
+            log.exception("physics generator stage failed for query_id=%s", q.query_id or "q")
             generator_candidates = []
 
+        # Stage 2: the 8B judge is the SOLE source of the final answer. It solves
+        # independently, cross-checks the three references, and re-decides. We never
+        # fall back to the deterministic/generator references (user policy).
         judge_candidate: Dict[str, Any] | None = None
-        chosen: Dict[str, Any] | None = None
         try:
             with get_manager().judge() as judge_ready:
                 if judge_ready:
-                    judge_candidate, chosen = self._judge(
+                    judge_candidate = self._judge(
                         arbiter, q, question, deterministic, generator_candidates
                     )
+                else:
+                    log.critical(
+                        "physics judge could not be swapped in (residency); no 8B "
+                        "answer available for query_id=%s", q.query_id or "q")
         except Exception:
+            log.exception("physics judge stage failed for query_id=%s", q.query_id or "q")
             judge_candidate = None
-            chosen = None
 
-        final = self._choose_final(deterministic, generator_candidates, judge_candidate, chosen)
+        final = self._choose_final(judge_candidate)
         return self._result_from_candidate(q, final, "physics cascade")
 
     def _run_generators(
@@ -335,13 +360,22 @@ class PhysicsAdapter:
         question: str,
         deterministic: Dict[str, Any],
         generators: List[Dict[str, Any]],
-    ) -> Tuple[Dict[str, Any], Dict[str, Any] | None]:
+    ) -> Dict[str, Any]:
         system = (
-            "You are the SENIOR physics arbiter. First solve the problem yourself "
-            "from the original question. Then recheck your solution against three "
-            "candidate answers: the deterministic solver and two junior LLM answers. "
-            "Choose the actually correct answer, or give your own corrected answer if "
-            "all candidates are wrong. Finish with ONE JSON object and nothing after it: "
+            "You are the SENIOR PHYSICS ARBITER. Work in three explicit stages and "
+            "show your reasoning.\n"
+            "STAGE 1 - SOLVE IT YOURSELF: ignore every candidate and solve the problem "
+            "from the original question alone. Derive the quantity and its unit from "
+            "first principles.\n"
+            "STAGE 2 - CROSS-CHECK THE THREE REFERENCES: you are given three candidate "
+            "answers for reference ONLY - a deterministic solver and two junior LLM "
+            "answers. Compare each against your STAGE 1 result; note where they agree, "
+            "where they differ, and why.\n"
+            "STAGE 3 - RE-EVALUATE AND DECIDE: do NOT assume your STAGE 1 answer is "
+            "correct. Use the references to recheck your own work; if a reference "
+            "exposes a mistake, correct yourself. If the references are wrong, keep "
+            "your corrected own answer. State the single final answer and its unit.\n"
+            "Then finish with ONE JSON object and nothing after it: "
             '{"chosen": <"deterministic" or 1 or 2 or "self">, '
             '"answer": <final numerical or symbolic value only>, '
             '"unit": <ASCII unit, or empty string>, '
@@ -350,8 +384,8 @@ class PhysicsAdapter:
             "For numerical answers, the answer field must be an unrounded plain "
             "ASCII decimal or integer only, e.g. 0.02304; never use LaTeX, "
             "fractions, radicals, currency symbols, commas, scientific notation, "
-            "or units inside the answer field. LaTeX is allowed in explanation "
-            "and steps."
+            "or units inside the answer field. Put the unit ONLY in the unit field, "
+            "never in the answer field. LaTeX is allowed in explanation and steps."
         )
         rendered = [_render_candidate("Deterministic", deterministic)]
         rendered.extend(
@@ -364,62 +398,136 @@ class PhysicsAdapter:
             + "\n".join(rendered)
             + "\n\nSolve independently first, then compare these candidates."
         )
-        text = arbiter.chat(
-            system,
-            user,
-            max_tokens=_physics_tokens(),
-            log_context=f"type2 query_id={q.query_id or 'q'} stage=physics.judge",
-            loaded_models=[arbiter.model],
-        )
-        data = extract_last_json_object(text) or {}
-        cand = _candidate_from_json(arbiter.model, "judge", data)
-        return cand, self._chosen_candidate(data, deterministic, generators)
-
-    def _chosen_candidate(
-        self,
-        data: Any,
-        deterministic: Dict[str, Any],
-        generators: List[Dict[str, Any]],
-    ) -> Dict[str, Any] | None:
-        if not isinstance(data, dict):
-            return None
-        raw = data.get("chosen")
-        text = str(raw or "").strip().lower()
-        if text in {"deterministic", "solver", "0"}:
-            return deterministic
-        if text == "self":
-            return None
         try:
-            idx = int(raw)
-        except (TypeError, ValueError):
-            return None
-        if 1 <= idx <= len(generators):
-            return generators[idx - 1]
-        return None
+            text = arbiter.chat(
+                system,
+                user,
+                max_tokens=_physics_tokens(),
+                log_context=f"type2 query_id={q.query_id or 'q'} stage=physics.judge",
+                loaded_models=[arbiter.model],
+            )
+        except Exception:
+            log.exception("physics judge phase-1 call failed for query_id=%s", q.query_id or "q")
+            text = ""
+        data, breadcrumb = self._recover_judge_json(arbiter, text, q)
+        cand = _candidate_from_json(arbiter.model, "judge", data)
+        cand["debug"] = breadcrumb
+        return cand
 
-    def _choose_final(
-        self,
-        deterministic: Dict[str, Any],
-        generators: List[Dict[str, Any]],
-        judge: Dict[str, Any] | None,
-        chosen: Dict[str, Any] | None,
+    @staticmethod
+    def _candidate_usable(data: Any) -> bool:
+        """True iff `data` is a dict carrying a non-Uncertain answer once normalized."""
+        if not isinstance(data, dict):
+            return False
+        ans = data.get("answer")
+        plain = to_plain_numeric_answer(ans) or to_ascii_answer(ans)
+        return _valid_answer(plain)
+
+    def _recover_judge_json(
+        self, arbiter: LLMClient, phase1_text: str, q: PredictQuery
+    ) -> Tuple[Dict[str, Any], str]:
+        """Recover the judge's OWN final answer as a dict — never the references.
+
+        The 8B judge runs in thinking mode and so cannot use guided JSON; its reply
+        is free-form and sometimes unparseable. Recover in order: (1) the last
+        balanced JSON object; (2) tolerant regex over the raw text; (3) a no-think
+        guided-JSON re-extraction of the judge's own reasoning. Returns
+        (data, breadcrumb)."""
+        data = extract_last_json_object(phase1_text)
+        if isinstance(data, dict) and self._candidate_usable(data):
+            return data, "step1:last_json"
+
+        log.warning("physics judge phase-1 JSON unusable for query_id=%s; recovering",
+                    q.query_id or "q")
+
+        regex = self._regex_recover_fields(phase1_text)
+        if self._candidate_usable(regex):
+            if isinstance(data, dict):
+                merged = dict(data)
+                merged.update({k: v for k, v in regex.items() if v not in (None, "")})
+                return merged, "step2:regex"
+            return regex, "step2:regex"
+
+        phase2 = self._phase2_extract(arbiter, phase1_text, q)
+        if isinstance(phase2, dict) and self._candidate_usable(phase2):
+            return phase2, "step3:phase2"
+
+        log.critical("physics judge recovery FAILED for query_id=%s (no usable answer "
+                     "from any step)", q.query_id or "q")
+        return (data if isinstance(data, dict) else {}), "failed"
+
+    @staticmethod
+    def _regex_recover_fields(text: str) -> Dict[str, Any]:
+        """Tolerant in-process recovery of answer/unit/chosen from free-form judge
+        text (handles unquoted/single-quoted JSON-ish values and a 'Final answer:'
+        line). No network call."""
+        stripped = strip_think(text or "")
+        out: Dict[str, Any] = {}
+        m = re.search(r'["\']?answer["\']?\s*[:=]\s*["\']?([^"\',}\n]+)', stripped, re.I)
+        if m:
+            out["answer"] = m.group(1).strip()
+        m = re.search(r'["\']?unit["\']?\s*[:=]\s*["\']?([^"\',}\n]*)', stripped, re.I)
+        if m:
+            out["unit"] = m.group(1).strip()
+        m = re.search(r'["\']?chosen["\']?\s*[:=]\s*["\']?([^"\',}\n]+)', stripped, re.I)
+        if m:
+            out["chosen"] = m.group(1).strip()
+        if "answer" not in out:
+            m = re.search(r'final\s+answer\s*[:\-]\s*(.+)', stripped, re.I)
+            if m:
+                out["answer"] = m.group(1).strip().rstrip(".")
+        return out
+
+    def _phase2_extract(
+        self, arbiter: LLMClient, phase1_text: str, q: PredictQuery
     ) -> Dict[str, Any]:
-        if judge is not None and _valid_answer(judge["answer"]):
+        """Guided-JSON re-extraction: a cheap no-think call that transcribes the
+        arbiter's OWN final answer/unit into strict JSON (no new reasoning, value
+        unchanged). Runs against the same 8B while it is still awake (inside the
+        judge() swap), so it must be called from within `_judge`."""
+        system = (
+            "Extract the senior physics arbiter's FINAL answer from the analysis below "
+            "into one JSON object. Copy the arbiter's own final value and unit verbatim "
+            "- do not solve anything yourself and do not change the value. Return ONLY: "
+            '{"chosen": <"deterministic"|1|2|"self">, '
+            '"answer": <plain ASCII number or symbolic value, no unit>, '
+            '"unit": <ASCII unit or empty string>, '
+            '"explanation": <the arbiter\'s final explanation>, '
+            '"steps": [<the arbiter\'s checking steps>]}. '
+            "The answer field must contain no unit; put the unit only in the unit field."
+        )
+        try:
+            text = arbiter.chat(
+                system,
+                phase1_text or "(no analysis was produced)",
+                max_tokens=512,
+                enable_thinking=False,
+                response_format={"type": "json_object"},
+                log_context=f"type2 query_id={q.query_id or 'q'} stage=physics.judge.reextract",
+                loaded_models=[arbiter.model],
+            )
+        except Exception:
+            log.exception("physics judge phase-2 re-extract failed for query_id=%s",
+                          q.query_id or "q")
+            return {}
+        return extract_last_json_object(text) or {}
+
+    def _choose_final(self, judge: Dict[str, Any] | None) -> Dict[str, Any]:
+        """The 8B judge is authoritative: its recovered answer is the final answer.
+        The deterministic solver and the two 4B generators are references only and
+        are NEVER used as the answer. If the judge yields nothing usable (it errored
+        or could not be swapped in), return Uncertain — never a reference value."""
+        if judge is not None and _valid_answer(judge.get("answer")):
             return judge
-        if chosen is not None and _valid_answer(chosen["answer"]):
-            return chosen
-        if _valid_answer(deterministic["answer"]):
-            return deterministic
-        for cand in generators:
-            if _valid_answer(cand["answer"]):
-                return cand
+        log.critical("physics: no usable 8B judge answer; returning Uncertain (no "
+                     "deterministic/generator fallback by policy)")
         return _candidate(
             label="physics-cascade",
-            source="fallback",
+            source="judge-unavailable",
             answer="Uncertain",
             unit="",
-            explanation="No candidate produced a usable physics answer.",
-            steps=["No candidate produced a usable physics answer."],
+            explanation="The physics judge did not return a usable answer.",
+            steps=["The physics judge did not return a usable answer."],
             confidence=0.0,
         )
 

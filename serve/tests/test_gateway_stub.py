@@ -225,7 +225,10 @@ def test_type2_judge_prompt_includes_deterministic_candidate(monkeypatch):
     assert "reference only" in judge_users[0]
 
 
-def test_type2_invalid_judge_falls_back_to_deterministic(monkeypatch):
+def test_type2_invalid_judge_returns_uncertain_not_deterministic(monkeypatch):
+    """No-fallback policy: when the 8B judge yields nothing usable even after the
+    recovery ladder (here phase-1 prose AND the phase-2 re-extract both fail), the
+    result is Uncertain — never the deterministic reference value."""
     import gateway.physics_adapter as pa
     from gateway.schema import PredictQuery
     from gateway.vllm_client import LLMClient
@@ -237,15 +240,16 @@ def test_type2_invalid_judge_falls_back_to_deterministic(monkeypatch):
     adapter = _physics_adapter_with_stub_lineup(monkeypatch, deterministic)
 
     def fake_chat(self, system, user, **kwargs):
+        # "physics.judge" matches BOTH the phase-1 judge and the phase-2 reextract,
+        # so the entire judge ladder yields unparseable text here.
         if "physics.judge" in kwargs.get("log_context", ""):
             return "not json"
         return '{"answer": "5", "unit": "A", "explanation": "Generator.", "steps": ["gen step"], "confidence": 0.6}'
 
     monkeypatch.setattr(LLMClient, "chat", fake_chat)
     r = adapter.answer(PredictQuery(query_id="P-DET", type="type2", query="Find the current."))
-    assert r.answer == "4"
-    assert r.unit == "A"
-    assert r.reasoning.steps == ["solver step"]
+    assert r.answer == "Uncertain"        # NOT the deterministic "4"
+    assert r.unit == ""
 
 
 def test_type2_judge_json_allows_latex_explanation(monkeypatch):
@@ -291,7 +295,9 @@ def test_type2_answers_are_plain_numbers():
     assert pa._candidate(label="x", source="test", answer=r"$0.02304 \text{ N}$")["answer"] == "0.02304"
 
 
-def test_type2_uncertain_deterministic_falls_back_to_generator(monkeypatch):
+def test_type2_uncertain_deterministic_no_fallback_to_generator(monkeypatch):
+    """Even when the deterministic reference abstained, a failed judge does NOT fall
+    back to a generator's answer — the generators are references only."""
     import gateway.physics_adapter as pa
     from gateway.schema import PredictQuery
     from gateway.vllm_client import LLMClient
@@ -309,9 +315,77 @@ def test_type2_uncertain_deterministic_falls_back_to_generator(monkeypatch):
 
     monkeypatch.setattr(LLMClient, "chat", fake_chat)
     r = adapter.answer(PredictQuery(query_id="P-GEN", type="type2", query="Find the current."))
-    assert r.answer == "5"
+    assert r.answer == "Uncertain"        # NOT the generator's "5"
+    assert r.unit == ""
+
+
+def test_type2_judge_regex_recovery(monkeypatch):
+    """When the judge reasons in prose without a JSON object, the regex step recovers
+    its answer/unit and the (network) phase-2 re-extract is NOT invoked."""
+    import gateway.physics_adapter as pa
+    from gateway.schema import PredictQuery
+    from gateway.vllm_client import LLMClient
+
+    deterministic = pa._candidate(
+        label="deterministic", source="deterministic", answer="4", unit="A",
+        explanation="Deterministic solver answer.", steps=["solver step"], confidence=0.9,
+    )
+    adapter = _physics_adapter_with_stub_lineup(monkeypatch, deterministic)
+
+    def fake_chat(self, system, user, **kwargs):
+        ctx = kwargs.get("log_context", "")
+        if "physics.judge.reextract" in ctx:
+            raise AssertionError("phase-2 re-extract must not run when regex recovers")
+        if "physics.judge" in ctx:
+            return "Worked it through. answer: 6 A"          # prose, no JSON object
+        return '{"answer": "5", "unit": "A", "explanation": "Generator.", "steps": ["gen step"], "confidence": 0.6}'
+
+    monkeypatch.setattr(LLMClient, "chat", fake_chat)
+    r = adapter.answer(PredictQuery(query_id="P-REGEX", type="type2", query="Find the current."))
+    assert r.answer == "6"
     assert r.unit == "A"
-    assert r.reasoning.steps == ["gen step"]
+
+
+def test_type2_judge_phase2_reextract(monkeypatch):
+    """When phase-1 has no parseable JSON and no regex-recoverable answer, the no-think
+    guided-JSON phase-2 re-extract of the judge's own reasoning supplies the answer."""
+    import gateway.physics_adapter as pa
+    from gateway.schema import PredictQuery
+    from gateway.vllm_client import LLMClient
+
+    deterministic = pa._candidate(
+        label="deterministic", source="deterministic", answer="4", unit="A",
+        explanation="Deterministic solver answer.", steps=["solver step"], confidence=0.9,
+    )
+    adapter = _physics_adapter_with_stub_lineup(monkeypatch, deterministic)
+
+    def fake_chat(self, system, user, **kwargs):
+        ctx = kwargs.get("log_context", "")
+        if "physics.judge.reextract" in ctx:
+            return '{"chosen": "self", "answer": "6", "unit": "A", "explanation": "Re-extracted.", "steps": ["x"]}'
+        if "physics.judge" in ctx:
+            return "The reasoning here is inconclusive prose with no verdict object."
+        return '{"answer": "5", "unit": "A", "explanation": "Generator.", "steps": ["gen step"], "confidence": 0.6}'
+
+    monkeypatch.setattr(LLMClient, "chat", fake_chat)
+    r = adapter.answer(PredictQuery(query_id="P-PHASE2", type="type2", query="Find the current."))
+    assert r.answer == "6"
+    assert r.unit == "A"
+
+
+def test_type2_candidate_captures_trailing_unit():
+    """A unit crammed into the answer field is moved to the unit field, not discarded."""
+    import gateway.physics_adapter as pa
+
+    c = pa._candidate(label="x", source="test", answer="5 A")
+    assert c["answer"] == "5" and c["unit"] == "A"
+    c2 = pa._candidate(label="x", source="test", answer="3 V/m")
+    assert c2["answer"] == "3" and c2["unit"] == "V/m"
+    c3 = pa._candidate(label="x", source="test", answer="9.1e-31 kg")
+    assert c3["unit"] == "kg" and float(c3["answer"]) == 9.1e-31
+    # An explicit unit field wins and the answer is not double-stripped.
+    c4 = pa._candidate(label="x", source="test", answer="5", unit="A")
+    assert c4["answer"] == "5" and c4["unit"] == "A"
 
 
 def test_split_lineup_uses_role_tags():

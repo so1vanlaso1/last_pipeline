@@ -31,6 +31,7 @@ to a no-op (`enabled=False`): every model is simply resident, as before.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from contextlib import contextmanager
 from typing import List, Optional
@@ -213,7 +214,11 @@ def get_manager() -> Residency:
     global _manager
     if _manager is None:
         models = cfg.load_models()
-        active = cfg.swap_active(models)
+        # No sleep/wake against the stub backend: there are no real vLLM servers to
+        # swap, so the swap would only make doomed HTTP calls and (failing to confirm
+        # a sleep) refuse to wake the judge — disabling the cascade in tests.
+        stub = os.environ.get("GATEWAY_LLM", "vllm").lower() == "stub"
+        active = cfg.swap_active(models) and not stub
         gens = [m["base_url"] for m in models if m.get("role") != "judge"]
         judge = next((m["base_url"] for m in models if m.get("role") == "judge"), None)
         _manager = Residency(generator_urls=gens, judge_url=judge, enabled=active)

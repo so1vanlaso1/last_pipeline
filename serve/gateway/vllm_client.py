@@ -15,6 +15,7 @@ wiring can be exercised with no GPU and no model (see tests/).
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from typing import Any, Dict, List, Optional
@@ -210,7 +211,7 @@ class LLMClient:
         thinking: bool = True,
         temperature: float = 0.0,
     ):
-        self.mode = (mode or "vllm").lower()
+        self.mode = (mode or os.environ.get("GATEWAY_LLM", "vllm")).lower()
         self.base_url = (base_url or "http://localhost:8001/v1").rstrip("/")
         self.model = model or "Qwen/Qwen3-8B"
         # 240s (was 55s): a THINKING generation of up to the configured think-token
@@ -380,7 +381,10 @@ def _stub_completion(system: str, user: str) -> str:
         ans = "A" if has_options else "Yes"
         return ('{"chosen": 1, "answer": "%s", "premises_used": [1, 2], '
                 '"explanation": "Arbiter re-derives the answer from premises 1 and 2."}' % ans)
-    if "senior physics arbiter" in s:                          # physics cascade judge
+    if "extract the senior physics arbiter" in s:              # physics cascade judge RE-EXTRACT (phase 2)
+        return ('{"chosen": "self", "answer": "6", "unit": "A", '
+                '"explanation": "Re-extracted arbiter answer.", "steps": ["Re-extract."]}')
+    if "senior physics arbiter" in s:                          # physics cascade judge (phase 1)
         return ('{"chosen": "self", "answer": "6", "unit": "A", '
                 '"explanation": "The senior physics arbiter computes the value directly.", '
                 '"steps": ["Solve independently.", "Compare deterministic and junior answers."]}')
