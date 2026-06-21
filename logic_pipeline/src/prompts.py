@@ -132,8 +132,136 @@ Before answering, silently test each option:
 Reply in EXACTLY this format: ANSWER: <letter | Unknown> WHY: <one short sentence, at most 30 words, citing premise numbers>"""
 
 
+# ── Question-mode classifier (Type 1) ────────────────────────────────────────
+# Type 1 yes/no questions come in two flavours that need DIFFERENT verdict rules:
+#   * entailment  — "Does it follow that X?" / "Is it true that X?": 3-valued,
+#                   lack of proof = Not Given (the SYSTEM_YNN default).
+#   * provability — "Do the premises prove/establish/guarantee X?", "Does X satisfy
+#                   every requirement?": a missing/unsatisfied condition means No
+#                   (not Not Given); Not Given is reserved for a genuine premise
+#                   contradiction.
+# This regex is the DETERMINISTIC, precision-first gate (the entailment veto wins
+# ties). The models ALSO self-classify at run time (see MODE_TAXONOMY); the gateway
+# combines the two — the regex governs the backstop, the model label can only widen
+# it on questions with no veto phrase.
+_ENTAILMENT_VETO_RE = re.compile(
+    r"does\s+it\s+follow\b"
+    r"|do\s+the\s+premises\s+(?:logically\s+)?(?:entail|imply)\b"
+    r"|is\s+it\s+true\s+that\b"
+    r"|can\s+we\s+(?:conclude|infer|deduce)\b"
+    r"|\b(?:what|who|which|how\s+many)\b",
+    re.IGNORECASE,
+)
+
+_PROVABILITY_TRIGGER_RE = re.compile(
+    r"do(?:es)?\s+(?:the\s+)?premises?\s+(?:prove|establish|show|demonstrate|confirm|guarantee|ensure|support)\b"
+    r"|do(?:es)?\b.*\b(?:guarantee|ensure|establish|prove)\b"
+    r"|\b(?:suffice|sufficient|enough)\s+to\b"
+    r"|(?:satisf(?:y|ies)|meet(?:s)?)\b.*\b(?:every|all|each)\b.*\b(?:requirement|condition|criteri|prerequisite|rule)s?\b"
+    r"|is\s+it\s+(?:proven|guaranteed|established|certain|sufficient|enough)\b.*\bthat\b"
+    r"|can\b.*\bbe\s+(?:formally\s+)?(?:closed|finalized|finalised|completed|certified|approved|released|signed\s*off)\b",
+    re.IGNORECASE,
+)
+
+_PROVABILITY_WRAPPER_RE = re.compile(
+    r"^\s*(?:"
+    r"do(?:es)?\s+(?:the\s+)?premises?\s+(?:prove|establish|show|demonstrate|confirm|guarantee|ensure|support)\s+(?:that\s+)?"
+    r"|do(?:es)?\s+.*?\bguarantee\s+(?:that\s+)?"
+    r"|is\s+it\s+(?:proven|guaranteed|established|certain)\s+that\s+"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_ynn_options(options) -> bool:
+    """True when the option set looks like a Yes/No(/Uncertain) choice — i.e. the
+    question is NOT a content multiple-choice."""
+    if not options or not (2 <= len(options) <= 3):
+        return False
+    norm = {_norm(o) for o in options}
+    allowed = {
+        "yes", "no", "uncertain", "unknown", "notgiven", "not given",
+        "undetermined", "maybe", "cannot be determined",
+    }
+    return norm <= allowed and "yes" in norm and "no" in norm
+
+
+def entailment_veto(query: str | None) -> bool:
+    """True when the question is a plain entailment / truth / wh question — these
+    must keep the 3-valued behaviour and are never collapsed to Yes/No."""
+    return bool(_ENTAILMENT_VETO_RE.search(query or ""))
+
+
+def classify_type1_mode(query: str | None, options=None) -> str:
+    """Return 'mcq' | 'provability' | 'entailment' (default 'entailment').
+    Precision-first: a plain-entailment / wh phrasing VETOES provability."""
+    if options and not _is_ynn_options(options):
+        return "mcq"
+    q = query or ""
+    if entailment_veto(q):
+        return "entailment"
+    if _PROVABILITY_TRIGGER_RE.search(q):
+        return "provability"
+    return "entailment"
+
+
+def strip_provability_wrapper(query: str | None) -> str:
+    """Recover the inner claim from a provability question, e.g.
+    'Do the premises prove that the case can be closed?' -> 'the case can be closed'.
+    Falls back to the original text (never empty)."""
+    q = (query or "").strip()
+    m = _PROVABILITY_WRAPPER_RE.match(q)
+    inner = (q[m.end():] if m else q).strip().rstrip("?.").strip()
+    return inner or q
+
+
+# Injected before the "Reply in EXACTLY this format:" line of the examiner prompts
+# so it survives rules_for() (which strips that trailing line for the JSON flow).
+_FORMAT_ANCHOR = "Reply in EXACTLY this format:"
+
+MODE_TAXONOMY = """\
+Before answering, decide which MODE the question is in and apply that mode's rule.
+
+MODE A - Entailment (DEFAULT; e.g. "Does it follow that ...", "Is it true that ...", "Can we conclude ..."):
+* Use the rules above as written. Yes = the statement is proved; No = its negation is proved; Not Given = neither is proved. Lack of proof = Not Given.
+
+MODE B - Provability / sufficiency (the question asks whether the premises PROVE / ESTABLISH / SHOW / GUARANTEE / are ENOUGH for a claim, or whether something SATISFIES every requirement):
+* Yes = every required step or condition for the claim is proved by the premises.
+* No = at least one required step or condition is missing, unstated, unsatisfied, or directly negated. In this mode "merely not proved" means No - this OVERRIDES "lack of proof = Not Given".
+* Not Given = ONLY when two or more premises genuinely contradict each other so that neither Yes nor No can be determined. If an apparent opposition actually settles the claim (e.g. a "must not ..." rule that defeats it), answer that settled outcome (usually No), not Not Given.
+* For a No answer, premises_used must cite BOTH the relevant path toward the claim AND the blocking/negating branch - not only the blocker. Also include the fact and the one immediate consequence rule for any feature explicitly named in the question. Do not cite unrelated chains that prove a different claim.
+
+State which mode you used. When the answer is Not Given in Mode B you MUST be able to name the two premises that contradict each other."""
+
+MCQ_PREMISE_POLICY = """\
+premises_used policy: cite only the premises that prove the selected option's positive claim. Do NOT cite a rule whose extra condition is never satisfied and that only explains why a different conclusion is unproved."""
+
+
+def _inject_before_format(text: str, addendum: str) -> str:
+    idx = text.rfind(_FORMAT_ANCHOR)
+    if idx == -1:
+        return text.rstrip() + "\n\n" + addendum
+    return text[:idx].rstrip() + "\n\n" + addendum + "\n" + text[idx:]
+
+
+def _ynn_json_extra(record: Record) -> str:
+    """Extra JSON fields (question_mode + conflict) the model reports for non-MCQ
+    yes/no questions; read by the gateway's provability backstop."""
+    if record.answer_type == AnswerType.MCQ:
+        return ""
+    return (
+        ', "question_mode": <"provability" if the question asks whether the premises '
+        'prove/establish/guarantee a claim or whether something satisfies every '
+        'requirement, else "entailment">, '
+        '"conflict": <true ONLY if two premises directly contradict so that neither '
+        'Yes nor No can be determined; else false>'
+    )
+
+
 def system_for(record: Record) -> str:
-    return SYSTEM_MCQ if record.answer_type == AnswerType.MCQ else SYSTEM_YNN
+    if record.answer_type == AnswerType.MCQ:
+        return _inject_before_format(SYSTEM_MCQ, MCQ_PREMISE_POLICY)
+    return _inject_before_format(SYSTEM_YNN, MODE_TAXONOMY)
 
 
 def definitions_for(record: Record) -> str:
@@ -162,6 +290,17 @@ def build_user(record: Record) -> str:
     if record.answer_type == AnswerType.MCQ and record.options:
         opts = "\n".join(f"{LETTERS[i]}. {o}" for i, o in enumerate(record.options))
         parts += [f"Question: {record.question_nl}", f"Options:\n{opts}"]
+    elif classify_type1_mode(record.question_nl, record.options) == "provability":
+        # Provability/sufficiency: a missing required condition means No, not Not
+        # Given. Reframe the task and recover the inner claim from the wrapper.
+        parts += [
+            "Question: Treat this as a PROVABILITY question - decide whether the "
+            "premises ESTABLISH the claim below. Yes = every required condition is "
+            "proved; No = a required condition is missing, unstated, unsatisfied, or "
+            "directly negated; Not Given = ONLY if two premises genuinely contradict. "
+            "Answer Yes, No, or Not Given.",
+            f"Statement: {strip_provability_wrapper(record.question_nl)}",
+        ]
     else:
         # Yes/No/Not-Given: the dataset's question string IS the target statement;
         # the "Question" slot carries the fixed decision task.
@@ -420,7 +559,8 @@ def generator_system(record: Record) -> str:
         "reply with ONE JSON object on its own line and nothing after it:\n"
         '{"answer": ' + answer_space(record)
         + ', "premises_used": [<1-based numbers of the premises you actually used>], '
-        '"explanation": <one or two short sentences citing those premise numbers>}'
+        '"explanation": <one or two short sentences citing those premise numbers>'
+        + _ynn_json_extra(record) + '}'
     )
 
 
@@ -467,7 +607,8 @@ def judge_system(record: Record, n_candidates: int) -> str:
         '{"chosen": <' + pick + ' — the junior you judged correct>, '
         '"answer": ' + answer_space(record)
         + ', "premises_used": [<1-based premise numbers you determine are needed>], '
-        '"explanation": <2-4 sentences in your own words citing those premises>}'
+        '"explanation": <2-4 sentences in your own words citing those premises>'
+        + _ynn_json_extra(record) + '}'
     )
 
 
