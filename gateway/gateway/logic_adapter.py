@@ -21,6 +21,7 @@ cheap JSON fallback call (primary model) that never changes the voted answer.
 from __future__ import annotations
 
 import concurrent.futures
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import _paths  # noqa: F401  (side-effect: put logic_pipeline/src on sys.path)
@@ -31,7 +32,6 @@ from .schema import PredictQuery, PredictResult, Reasoning
 from .units import (
     clamp_indices, find_no_option, find_uncertain_option, find_yes_option,
     looks_like_ynn, map_letter_to_option, match_text_to_option, premises_from_text,
-    to_plain_numeric_answer,
 )
 from .vllm_client import LLMClient, extract_json_object, extract_last_json_object
 
@@ -60,9 +60,8 @@ def _chat(
     stage: str,
     loaded_clients: List[LLMClient],
     max_tokens: int,
-    temperature: Optional[float] = None,
+    temperature: float = 0.0,
     enable_thinking: Optional[bool] = None,
-    response_format: Optional[dict] = None,
 ) -> str:
     return client.chat(
         system,
@@ -72,7 +71,6 @@ def _chat(
         enable_thinking=enable_thinking,
         log_context=f"type1 query_id={query_id or 'q'} stage={stage}",
         loaded_models=model_labels(loaded_clients),
-        response_format=response_format,
     )
 
 
@@ -85,7 +83,7 @@ def _chat_json(
     stage: str,
     loaded_clients: List[LLMClient],
     max_tokens: int,
-    temperature: Optional[float] = None,
+    temperature: float = 0.0,
 ) -> Optional[dict]:
     return client.chat_json(
         system,
@@ -176,11 +174,6 @@ def _fol_reasoning(why: str, premises_used: List[int]) -> Reasoning:
     if not steps:
         steps.append("Derived from the given premises.")
     return Reasoning(type="fol", steps=steps)
-
-
-def _plain_free_form_answer(answer: Any) -> str:
-    text = str(answer or "").strip()
-    return to_plain_numeric_answer(text) or text
 
 
 def _choice(judges: List[Judge], q: PredictQuery) -> PredictResult:
@@ -277,11 +270,7 @@ def _free_form(client: LLMClient, q: PredictQuery) -> PredictResult:
         "Return JSON only, exactly these fields: "
         "{\"answer\": <the final answer as a number or short text>, "
         "\"premises_used\": [<1-based premise numbers actually used>], "
-        "\"explanation\": <one or two sentences>}. "
-        "If the answer is numeric, the answer field must be an unrounded plain "
-        "ASCII decimal or integer only, e.g. 0.02304; never use LaTeX, fractions, "
-        "radicals, currency symbols, commas, scientific notation, or units inside "
-        "the answer field."
+        "\"explanation\": <one or two sentences>}."
     )
     user = f"Premises:\n{numbered}\n\nQuestion: {q.query}"
     try:
@@ -295,23 +284,21 @@ def _free_form(client: LLMClient, q: PredictQuery) -> PredictResult:
     if not isinstance(data, dict):
         text = _chat(
             client,
-            "Answer the question using only the premises. Reply with just the final answer. "
-            "If it is numeric, use only an unrounded plain ASCII decimal or integer; "
-            "no LaTeX, fractions, radicals, commas, scientific notation, symbols, or units.",
+            "Answer the question using only the premises. Reply with just the final answer.",
             user,
             query_id=q.query_id,
             stage="free_form_fallback",
             loaded_clients=[client],
             max_tokens=256,
         ).strip()
-        answer = _plain_free_form_answer(text.splitlines()[0]) if text else "Uncertain"
+        answer = text.splitlines()[0].strip() if text else "Uncertain"
         return PredictResult(
             query_id=q.query_id, answer=answer or "Uncertain", unit="",
             explanation=f"The answer is {answer}.", premises_used=[],
             reasoning=Reasoning(type="fol", steps=[f"Answer: {answer}"]),
         )
 
-    answer = _plain_free_form_answer(data.get("answer")) or "Uncertain"
+    answer = str(data.get("answer", "")).strip() or "Uncertain"
     zero = [int(x) - 1 for x in (data.get("premises_used") or []) if str(x).strip().lstrip("-").isdigit()]
     pu = clamp_indices(zero, len(premises))
     explanation = str(data.get("explanation", "")).strip() or f"The answer is {answer}."
@@ -346,10 +333,9 @@ def _think_tokens() -> int:
     BEFORE the final JSON. At 1024 the chain ate the whole budget → finish_reason
     =length with EMPTY content after the think block is stripped (the "empty
     content / corrupt generation" symptom). 4096 leaves room to finish reasoning
-    AND emit the JSON within max_model_len=8192. `logic_think_tokens` in
-    logic_config.yaml controls this.
+    AND emit the JSON within max_model_len=8192. Env LOGIC_THINK_TOKENS overrides.
     """
-    return int(cfg.serve_settings()["logic_think_tokens"])
+    return int(os.environ.get("LOGIC_THINK_TOKENS", "4096"))
 
 
 def _answer_space(record: Record) -> str:
@@ -382,14 +368,10 @@ def _generate_candidate(
     system = rules_for(record) + persona + _gen_format(record)
     user = build_user(record)
     try:
-        # enable_thinking defaults to the model's configured thinking mode. For a
-        # NON-thinking generator, force structured JSON (vLLM guided decoding) so a
-        # weaker model (Qwen3.5-4B @ FP8) can't emit prose / unquoted-string JSON.
-        rf = None if client.thinking else {"type": "json_object"}
+        # enable_thinking defaults to the model's configured thinking mode.
         text = _chat(
             client, system, user, query_id=record.id, stage="arbiter.generator",
             loaded_clients=loaded_clients, max_tokens=_think_tokens(),
-            response_format=rf,
         )
     except Exception:
         text = ""
@@ -418,17 +400,13 @@ def _render_candidates(cands: List[Dict[str, Any]]) -> str:
 
 
 def _chosen_candidate(data: Dict[str, Any], cands: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """The junior the judge EXPLICITLY endorsed via its `chosen` field, or None when
-    the field is missing/garbled/out-of-range. Returning None (not cands[0]) lets the
-    caller tell 'judge picked junior 1' apart from 'judge made no pick' — so we never
-    staple an unendorsed junior's premises/explanation onto the judge's answer."""
     try:
         idx = int(data.get("chosen"))
     except (TypeError, ValueError):
-        return None
+        return cands[0] if cands else None
     if 1 <= idx <= len(cands):
         return cands[idx - 1]
-    return None
+    return cands[0] if cands else None
 
 
 def _run_generators(gen_specs, record: Record) -> List[Dict[str, Any]]:
@@ -465,12 +443,12 @@ def _arbiter_choice(gen_specs, arbiter: LLMClient, q: PredictQuery) -> PredictRe
 
     # Stage 2: swap the judge in (generators sleep) for the arbitration AND any
     # arbiter-backed fallbacks below, then the generators wake back up on exit.
-    with mgr.judge() as judge_ready:
+    with mgr.judge():
         try:
             text = _chat(
                 arbiter, system, user, query_id=q.query_id, stage="arbiter.judge",
                 loaded_clients=[arbiter], max_tokens=_think_tokens(),
-            ) if judge_ready else ""     # judge not woken (swap degrade) -> use juniors
+            )
         except Exception:
             text = ""
         data = extract_last_json_object(text) or {}
@@ -479,31 +457,18 @@ def _arbiter_choice(gen_specs, arbiter: LLMClient, q: PredictQuery) -> PredictRe
         canon, display = canonicalize(ans_raw, record) if ans_raw else (None, "")
         answer = _map_to_option(canon, display, options, as_mcq)
         chosen = _chosen_candidate(data, cands)
-        # If the judge gave no parseable answer, fall back to the junior it endorsed
-        # (or junior 1 as a last resort) before the constrained option-pick call.
-        ref = chosen or (cands[0] if cands else None)
-        if answer is None and ref and ref["canon"]:
-            answer = _map_to_option(ref["canon"], ref["display"], options, as_mcq)
+        if answer is None and chosen and chosen["canon"]:
+            answer = _map_to_option(chosen["canon"], chosen["display"], options, as_mcq)
         if answer is None:
             answer = _choose_option_fallback(arbiter, q, options, [arbiter]) or (
                 options[find_uncertain_option(options) or 0] if options else "Uncertain")
 
         pu = _to_zero_based(data.get("premises_used"), len(q.premises or []))
         explanation = str(data.get("explanation", "")).strip()
-        # Backfill premises/explanation ONLY from a candidate whose answer maps to the
-        # SAME option we are submitting — otherwise the citations/explanation would
-        # justify a different option than `answer` (mirrors the reference
-        # cascade.finalize_judged `c.answer == win` guard). The judge's explicit pick
-        # is preferred when it also matches.
-        support = next(
-            (c for c in ([chosen] if chosen else []) + cands
-             if c and _map_to_option(c["canon"], c["display"], options, as_mcq) == answer),
-            None,
-        )
-        if not pu and support:
-            pu = support["premises_used"]
-        if not explanation and support:
-            explanation = support["explanation"]
+        if not pu and chosen:
+            pu = chosen["premises_used"]
+        if not explanation and chosen:
+            explanation = chosen["explanation"]
         if not pu:
             pu = _premises_used(
                 arbiter, explanation, list(q.premises or []), q.query, answer,
@@ -524,27 +489,22 @@ def _arbiter_free_form(gen_specs, arbiter: LLMClient, q: PredictQuery) -> Predic
         "You are a careful logic and arithmetic assistant. Use ONLY the premises and the "
         "question; no outside knowledge. You may think first, then Finish your reply with "
         'ONE JSON object: {"answer": <a number or short text>, "premises_used": '
-        '[<1-based premise numbers used>], "explanation": <1-2 sentences>}. '
-        "If the answer is numeric, the answer field must be an unrounded plain "
-        "ASCII decimal or integer only; never use LaTeX, fractions, radicals, "
-        "currency symbols, commas, scientific notation, or units inside the answer field."
+        '[<1-based premise numbers used>], "explanation": <1-2 sentences>}.'
     )
     guser = f"Premises:\n{numbered}\n\nQuestion: {q.query}"
 
     def gen(spec):
         c, persona = spec
         try:
-            rf = None if c.thinking else {"type": "json_object"}
             text = _chat(
                 c, gsys + persona, guser, query_id=q.query_id,
                 stage="arbiter.free_form_generator",
                 loaded_clients=[s[0] for s in gen_specs], max_tokens=_think_tokens(),
-                response_format=rf,
             )
         except Exception:
             text = ""
         d = extract_last_json_object(text) or {}
-        return {"label": c.model, "answer": _plain_free_form_answer(d.get("answer")),
+        return {"label": c.model, "answer": str(d.get("answer", "")).strip(),
                 "premises_used": _to_zero_based(d.get("premises_used"), len(premises)),
                 "explanation": str(d.get("explanation", "")).strip()}
 
@@ -559,43 +519,33 @@ def _arbiter_free_form(gen_specs, arbiter: LLMClient, q: PredictQuery) -> Predic
         "INDEPENDENTLY determine premises_used and write the explanation in your own words "
         "(reference the juniors, do not copy). Finish with ONE JSON object: "
         '{"chosen": <1 or 2>, "answer": <a number or short text>, "premises_used": '
-        '[<1-based>], "explanation": <1-2 sentences>}. '
-        "If the answer is numeric, the answer field must be an unrounded plain "
-        "ASCII decimal or integer only; never use LaTeX, fractions, radicals, "
-        "currency symbols, commas, scientific notation, or units inside the answer field."
+        '[<1-based>], "explanation": <1-2 sentences>}.'
     )
     auser = guser + "\n\nJunior answers (reference only):\n" + "\n".join(
         f"Junior {i} ({c['label']}): answer={c['answer'] or 'N/A'}; "
         f"premises_used={[j + 1 for j in c['premises_used']]}; explanation={c['explanation'] or '(none)'}"
         for i, c in enumerate(cands, 1))
-    with mgr.judge() as judge_ready:             # stage 2: swap the judge in
+    with mgr.judge():                            # stage 2: swap the judge in
         try:
             text = _chat(
                 arbiter, asys, auser, query_id=q.query_id,
                 stage="arbiter.free_form_judge", loaded_clients=[arbiter],
                 max_tokens=_think_tokens(),
-            ) if judge_ready else ""     # judge not woken (swap degrade) -> use juniors
+            )
         except Exception:
             text = ""
     data = extract_last_json_object(text) or {}
 
-    answer = _plain_free_form_answer(data.get("answer"))
+    answer = str(data.get("answer", "")).strip()
     chosen = _chosen_candidate(data, cands)
     if not answer:
         answer = (chosen["answer"] if chosen else "") or (cands[0]["answer"] if cands else "Uncertain")
     pu = _to_zero_based(data.get("premises_used"), len(premises))
     explanation = str(data.get("explanation", "")).strip()
-    # Only borrow premises/explanation from a junior whose answer equals the final
-    # answer, so they never describe a different value than the one submitted.
-    support = next(
-        (c for c in ([chosen] if chosen else []) + cands
-         if c and c["answer"].strip() and c["answer"].strip().lower() == answer.strip().lower()),
-        None,
-    )
-    if not pu and support:
-        pu = support["premises_used"]
-    if not explanation and support:
-        explanation = support["explanation"]
+    if not pu and chosen:
+        pu = chosen["premises_used"]
+    if not explanation and chosen:
+        explanation = chosen["explanation"]
     if not explanation:
         explanation = f"The answer is {answer}."
     return PredictResult(

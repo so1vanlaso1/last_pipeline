@@ -15,20 +15,21 @@ wiring can be exercised with no GPU and no model (see tests/).
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from typing import Any, Dict, List, Optional
 
 import requests
 
-from . import config as cfg
 from .io_log import append_model_io, model_label
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _THINK_OPEN = re.compile(r"<think>.*", re.IGNORECASE | re.DOTALL)
-_LATEX_COMMAND_ESCAPE = re.compile(
-    r'(?<!\\)\\(?:bar|cdot|frac|left|nabla|right|rho|sqrt|text|theta|times)\b'
-)
+# Qwen3-4B-Thinking-2507 PRE-FILLS "<think>" in its chat template, so the model's
+# output is "reasoning…</think>final answer" with NO opening tag in the content.
+# Drop everything from the start up to and including the first lone </think>.
+_THINK_CLOSE_ONLY = re.compile(r"^.*?</think>", re.IGNORECASE | re.DOTALL)
 
 
 def strip_think(text: str) -> str:
@@ -37,18 +38,10 @@ def strip_think(text: str) -> str:
     Qwen3-4B-Thinking-2507 emits because its template pre-fills the opening tag)."""
     text = text or ""
     text = _THINK_BLOCK.sub(" ", text)
-    low = text.lower()
-    if "<think>" in low:
+    if "<think>" in text.lower():
         text = _THINK_OPEN.sub(" ", text)
-        low = text.lower()
-    # Lone closing tag with no opening: drop the reasoning lead-in BUT only when
-    # nothing structural precedes it. If a "{" appears before the first "</think>",
-    # that token is inside the model's real JSON (e.g. quoted in an explanation), and
-    # stripping the lead-in would destroy the verdict object — so leave it alone.
-    if "<think>" not in low and "</think>" in low:
-        head, _sep, tail = text.partition("</think>")
-        if "{" not in head:
-            text = tail
+    if "</think>" in text.lower():          # lone closing tag → strip the lead-in too
+        text = _THINK_CLOSE_ONLY.sub(" ", text)
     return text.strip()
 
 
@@ -78,82 +71,11 @@ def extract_json_object(text: str) -> Optional[dict]:
         elif ch == "}":
             depth -= 1
             if depth == 0:
-                return _loads_json_object(text[start:i + 1])
+                try:
+                    return json.loads(text[start:i + 1])
+                except json.JSONDecodeError:
+                    return None
     return None
-
-
-def _escape_latex_backslashes_in_json_strings(text: str) -> str:
-    r"""Repair common model JSON where LaTeX commands in strings are not JSON-escaped.
-
-    Valid JSON needs ``"\\sqrt{...}"`` inside a string, but models often emit
-    ``"\sqrt{...}"``. Escape those command backslashes while preserving ordinary
-    JSON escapes such as ``\n`` and ``\"``.
-    """
-    out: list[str] = []
-    in_str = False
-    esc = False
-    i = 0
-    while i < len(text):
-        ch = text[i]
-        if not in_str:
-            out.append(ch)
-            if ch == '"':
-                in_str = True
-            i += 1
-            continue
-        if esc:
-            esc = False
-            out.append(ch)
-            i += 1
-            continue
-        if ch == '"':
-            in_str = False
-            out.append(ch)
-            i += 1
-            continue
-        if ch != "\\":
-            out.append(ch)
-            i += 1
-            continue
-
-        nxt = text[i + 1] if i + 1 < len(text) else ""
-        after = text[i + 2] if i + 2 < len(text) else ""
-        if nxt == "\\":
-            out.append(ch)
-            esc = True
-        elif nxt == "u":
-            maybe_hex = text[i + 2:i + 6]
-            if len(maybe_hex) == 4 and all(c in "0123456789abcdefABCDEF" for c in maybe_hex):
-                out.append(ch)
-                esc = True
-            else:
-                out.append("\\\\")
-        elif nxt in {'"', "\\", "/", "b", "f", "n", "r", "t"} and not after.isalpha():
-            out.append(ch)
-            esc = True
-        else:
-            out.append("\\\\")
-        i += 1
-    return "".join(out)
-
-
-def _loads_json_object(text: str) -> Optional[dict]:
-    if _LATEX_COMMAND_ESCAPE.search(text):
-        repaired = _escape_latex_backslashes_in_json_strings(text)
-        try:
-            obj = json.loads(repaired)
-        except json.JSONDecodeError:
-            obj = None
-        if isinstance(obj, dict):
-            return obj
-    try:
-        obj = json.loads(text)
-    except json.JSONDecodeError:
-        try:
-            obj = json.loads(_escape_latex_backslashes_in_json_strings(text))
-        except json.JSONDecodeError:
-            return None
-    return obj if isinstance(obj, dict) else None
 
 
 def extract_last_json_object(text: str) -> Optional[dict]:
@@ -192,12 +114,16 @@ def extract_last_json_object(text: str) -> Optional[dict]:
         if end < 0:                  # unbalanced from this '{' — try the next one
             i = start + 1
             continue
-        obj = _loads_json_object(text[start:end + 1])
-        if obj is None:              # balanced but not JSON (prose braces)
+        try:
+            obj = json.loads(text[start:end + 1])
+        except json.JSONDecodeError:  # balanced but not JSON (prose braces)
             i = start + 1
             continue
-        best = obj
-        i = end + 1                  # next TOP-LEVEL object starts after this one
+        if isinstance(obj, dict):
+            best = obj
+            i = end + 1              # next TOP-LEVEL object starts after this one
+        else:
+            i = start + 1
 
 
 class LLMClient:
@@ -208,23 +134,18 @@ class LLMClient:
         model: Optional[str] = None,
         timeout: float = 240.0,
         thinking: bool = True,
-        temperature: float = 0.0,
     ):
-        self.mode = (mode or "vllm").lower()
-        self.base_url = (base_url or "http://localhost:8001/v1").rstrip("/")
-        self.model = model or "Qwen/Qwen3-8B"
-        # 240s (was 55s): a THINKING generation of up to the configured think-token
-        # budget on the 4B/8B models at eager-FP8 can take 60-150s. A 55s cap timed out the judge
+        self.mode = (mode or os.environ.get("GATEWAY_LLM", "vllm")).lower()
+        self.base_url = (base_url or os.environ.get("VLLM_BASE_URL", "http://localhost:8001/v1")).rstrip("/")
+        self.model = model or os.environ.get("MODEL_ID", "Qwen/Qwen3-8B")
+        # 240s (was 55s): a THINKING generation of up to LOGIC_THINK_TOKENS tokens on
+        # the 4B/8B models at eager-FP8 can take 60-150s. A 55s cap timed out the judge
         # on EVERY query, silently dropping its verdict and falling back to a generator's
-        # answer — defeating the arbiter design. `gateway_llm_timeout` in
-        # logic_config.yaml controls this.
-        self.timeout = float(timeout if timeout != 240.0 else cfg.serve_settings()["gateway_llm_timeout"])
+        # answer — defeating the arbiter design. Env GATEWAY_LLM_TIMEOUT overrides.
+        self.timeout = float(os.environ.get("GATEWAY_LLM_TIMEOUT", timeout))
         # Per-model default for the reasoning calls (from serve/logic_config.yaml
         # `thinking:`). Used when a chat() caller passes enable_thinking=None.
         self.thinking = thinking
-        # Per-model default sampling temperature (from serve/logic_config.yaml
-        # `temperature:`). Used when a chat() caller passes temperature=None.
-        self.temperature = float(temperature)
 
     # ── public API ────────────────────────────────────────────────────────────
     def chat(
@@ -233,11 +154,10 @@ class LLMClient:
         user: str,
         *,
         max_tokens: int = 512,
-        temperature: Optional[float] = None,
+        temperature: float = 0.0,
         enable_thinking: Optional[bool] = None,
         log_context: Optional[str] = None,
         loaded_models: Optional[List[str]] = None,
-        response_format: Optional[dict] = None,
     ) -> str:
         """Single-turn chat completion. Returns the assistant text (think-stripped).
 
@@ -248,7 +168,6 @@ class LLMClient:
         raw = ""
         error: Optional[str] = None
         effective_enable = self.thinking if enable_thinking is None else enable_thinking
-        effective_temperature = self.temperature if temperature is None else float(temperature)
         effective_user = user
         # Qwen3 soft-switch: '/no_think' reliably disables the <think> block
         # regardless of the vLLM version's handling of chat_template_kwargs.
@@ -267,10 +186,9 @@ class LLMClient:
                 system,
                 effective_user,
                 max_tokens=max_tokens,
-                temperature=effective_temperature,
+                temperature=temperature,
                 enable_thinking=effective_enable,
                 raw_out=_set_raw,
-                response_format=response_format,
             )
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -297,7 +215,6 @@ class LLMClient:
         temperature: float,
         enable_thinking: Optional[bool],
         raw_out,
-        response_format: Optional[dict] = None,
     ) -> str:
         messages = [
             {"role": "system", "content": system},
@@ -312,11 +229,6 @@ class LLMClient:
             # whose chat template ignores the kwarg.
             "chat_template_kwargs": {"enable_thinking": enable_thinking},
         }
-        # Structured output: force a valid JSON object via vLLM guided decoding. Used
-        # for the NON-thinking generator calls — Qwen3.5-4B @ FP8 otherwise dumps prose
-        # and malformed JSON (unquoted string values) that fails to parse.
-        if response_format is not None:
-            payload["response_format"] = response_format
         url = self.base_url + "/chat/completions"
         resp = requests.post(url, json=payload, timeout=self.timeout)
         if resp.status_code >= 400:
@@ -334,18 +246,13 @@ class LLMClient:
         user: str,
         *,
         max_tokens: int = 512,
-        temperature: Optional[float] = None,
+        temperature: float = 0.0,
         log_context: Optional[str] = None,
         loaded_models: Optional[List[str]] = None,
     ) -> Optional[dict]:
-        """Chat and parse the LAST JSON object out of the reply. Forces no-think
+        """Chat and parse the first JSON object out of the reply. Forces no-think
         (these are small helper calls — premises_used, option pick — where a
-        reasoning chain only risks polluting the JSON and costs latency).
-
-        Uses the LAST object (same rule as the generator/judge path) because the
-        helper prompts embed a JSON *template/example*; a model that echoes the
-        template before its real answer would otherwise have the template parsed
-        instead of the answer."""
+        reasoning chain only risks polluting the JSON and costs latency)."""
         text = self.chat(
             system,
             user,
@@ -355,7 +262,7 @@ class LLMClient:
             log_context=log_context,
             loaded_models=loaded_models,
         )
-        return extract_last_json_object(text)
+        return extract_json_object(text)
 
     def models(self) -> dict:
         """Proxy payload for GET /v1/models."""
@@ -380,17 +287,8 @@ def _stub_completion(system: str, user: str) -> str:
         ans = "A" if has_options else "Yes"
         return ('{"chosen": 1, "answer": "%s", "premises_used": [1, 2], '
                 '"explanation": "Arbiter re-derives the answer from premises 1 and 2."}' % ans)
-    if "senior physics arbiter" in s:                          # physics cascade judge
-        return ('{"chosen": "self", "answer": "6", "unit": "A", '
-                '"explanation": "The senior physics arbiter computes the value directly.", '
-                '"steps": ["Solve independently.", "Compare deterministic and junior answers."]}')
     if "senior arbiter" in s:                                  # arbiter (free-form)
         return '{"chosen": 1, "answer": "2", "premises_used": [1, 2], "explanation": "Arbiter stub."}'
-    if "deterministic solver answer" in s:                     # physics cascade generator
-        return ('{"answer": "5", "unit": "A", '
-                '"explanation": "Junior physics calculation uses the provided reference only as a check.", '
-                '"steps": ["Read quantities.", "Compute the requested value."], '
-                '"confidence": 0.6}')
     if "physics problem solver" in s:                          # physics LLM fallback
         return '{"answer": "5", "unit": "A", "steps": ["Stub physics fallback."]}'
     if "a number or short text" in s or "final answer as a number or short text" in s:

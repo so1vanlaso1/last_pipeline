@@ -31,7 +31,6 @@ to a no-op (`enabled=False`): every model is simply resident, as before.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from contextlib import contextmanager
 from typing import List, Optional
@@ -44,18 +43,19 @@ log = logging.getLogger("gateway.residency")
 
 # Sleep/wake are blocking on the vLLM side; give them generous headroom (a cold
 # wake from CPU offload is seconds, not minutes, but the first one can recompile).
-_OP_TIMEOUT = float(os.environ.get("RESIDENCY_OP_TIMEOUT", "180"))
+_SETTINGS = cfg.serve_settings()
+_OP_TIMEOUT = float(_SETTINGS["residency_op_timeout"])
 # Level 1 (DEFAULT): offload slept weights to CPU RAM, copy back verbatim on wake —
 # fast (~1s) and, crucially, LOSSLESS for the FP8 (8bit) line-up. Level 2 (discard +
 # reload-from-disk) re-quantizes on wake and CORRUPTS these FP8 models (garbage "!!!!"
 # generations after the first sleep/wake cycle); only use it with 4bit/bf16 weights.
 # Either level moves weights OFF the GPU, so the ≤8B-on-GPU rule holds either way.
-_SLEEP_LEVEL = int(os.environ.get("RESIDENCY_SLEEP_LEVEL", "1"))
+_SLEEP_LEVEL = int(_SETTINGS["residency_sleep_level"])
 # A /sleep that is not CONFIRMED leaves that group's weights on the GPU, so the swap
 # retries before giving up — and if it still cannot confirm, it REFUSES to wake the
 # other group. Waking anyway is the only normal path to >8B on the GPU, which would
 # fail the committee's GPU-memory inspection (Submission Guide §6.3).
-_SLEEP_RETRIES = int(os.environ.get("RESIDENCY_SLEEP_RETRIES", "3"))
+_SLEEP_RETRIES = int(_SETTINGS["residency_sleep_retries"])
 
 
 class ResidencySwapError(RuntimeError):
@@ -213,9 +213,7 @@ def get_manager() -> Residency:
     global _manager
     if _manager is None:
         models = cfg.load_models()
-        # No sleep/wake against the stub backend (no real vLLM servers to swap).
-        stub = os.environ.get("GATEWAY_LLM", "vllm").lower() == "stub"
-        active = cfg.swap_active(models) and not stub
+        active = cfg.swap_active(models)
         gens = [m["base_url"] for m in models if m.get("role") != "judge"]
         judge = next((m["base_url"] for m in models if m.get("role") == "judge"), None)
         _manager = Residency(generator_urls=gens, judge_url=judge, enabled=active)

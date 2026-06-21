@@ -1,3 +1,7 @@
+#export NGROK_AUTHTOKEN=""
+#export ENFORCE_EAGER=0  # debug: fail if any lazy load is attempted (e.g. a model loading on the fly that should have been resident)
+
+
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
 # EXACT 2026 — one-shot setup for a vast.ai (Linux + NVIDIA GPU) machine.

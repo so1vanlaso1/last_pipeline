@@ -6,31 +6,45 @@ concurrent thinking 4B juniors — or "judge" — the 8B that arbitrates). Share
   * run_server.sh  — to download + launch one vLLM server per model, and
   * the gateway    — to know each server's base URL + weight/role for Type 1.
 
-The launch guard compares sum(params_b) against `max_resident_b` from the yaml.
-The committee's own limit is 8B TOTAL resident at any moment (MoE counted by
-total params) — raising max_resident_b is an explicit, logged decision, not
-something this module does silently.
+The launch guard compares sum(params_b) against `max_resident_b` (yaml key, env
+MAX_RESIDENT_B overrides; default 8). The committee's own limit is 8B TOTAL
+resident at any moment (MoE counted by total params) — raising max_resident_b is
+an explicit, logged decision, not something this module does silently.
 """
 
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = REPO_ROOT / "serve" / "logic_config.yaml"
 
+_ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def _expand(value: str) -> str:
+    def repl(m: re.Match) -> str:
+        return os.environ.get(m.group(1), m.group(2) or "")
+    return _ENV.sub(repl, str(value))
+
+
 def _num(value: Any, default: float) -> float:
-    """Parse a numeric yaml field. Falls back to `default` on anything non-numeric."""
+    """Parse a numeric yaml field, allowing ${ENV:-x} substitution (so e.g.
+    `params_b: ${JUDGE_PARAMS_B:-8.3}` works). Falls back to `default` on anything
+    non-numeric (None, empty, an unexpanded var)."""
     try:
-        return float(str(value))
+        return float(_expand(str(value)))
     except (TypeError, ValueError):
         return float(default)
 
 
-# Friendly shortcuts for the Type-1 JUDGE. Put one of these keys directly in
-# logic_config.yaml (or any full HF repo id, which passes through unchanged).
-# Keys are matched case-insensitively.
+# Friendly shortcuts for the Type-1 JUDGE. Set env JUDGE_MODEL to one of these keys
+# (or to any full HF repo id, which passes through unchanged) and the judge entry in
+# logic_config.yaml — `id: ${JUDGE_MODEL:-google/gemma-4-E4B-it}` — resolves to the
+# repo below. Keys are matched case-insensitively.
 _MODEL_ALIASES: Dict[str, str] = {
     "gemma":     "google/gemma-4-E4B-it",
     "gemma-e4b": "google/gemma-4-E4B-it",
@@ -39,7 +53,7 @@ _MODEL_ALIASES: Dict[str, str] = {
 
 
 def _read_yaml() -> Dict[str, Any]:
-    path = DEFAULT_CONFIG
+    path = Path(os.environ.get("LOGIC_CONFIG", str(DEFAULT_CONFIG)))
     if not path.exists():
         return {}
     import yaml  # lazy: only needed where PyYAML is installed
@@ -48,8 +62,9 @@ def _read_yaml() -> Dict[str, Any]:
 
 # ── Quantization ─────────────────────────────────────────────────────────────
 # A model can be served in reduced precision to shrink its VRAM (and CPU-offload)
-# footprint. `quantization:` in the yaml (or per-model `quantization:`) selects it.
-# The label maps to the vLLM serve flags below (run_server.sh appends them verbatim):
+# footprint. `quantization:` in the yaml (or per-model `quantization:`) selects it;
+# env QUANTIZATION overrides the global default. The label maps to the vLLM serve
+# flags below (run_server.sh appends them verbatim):
 #   none / bf16  -> full precision (the default; ~2 bytes/param)
 #   8bit         -> online FP8 weight quant (~1 byte/param; needs an Ada/Hopper/
 #                   Blackwell GPU, e.g. 4090/5070 — fp8 is unsupported on Ampere)
@@ -78,7 +93,11 @@ def _norm_quant(q: Any) -> str:
 
 
 def load_quant_global() -> str:
-    """Default quantization for every model (`quantization:` key beats 'none')."""
+    """Default quantization for every model (env QUANTIZATION/QUANT beats the yaml
+    `quantization:` key beats 'none')."""
+    env = os.environ.get("QUANTIZATION") or os.environ.get("QUANT")
+    if env:
+        return _norm_quant(env)
     return _norm_quant(_read_yaml().get("quantization"))
 
 
@@ -105,34 +124,33 @@ def _truthy(v: Any) -> bool:
 
 
 def load_thinking_global() -> bool:
-    """Default thinking mode for every model (`thinking:` key beats True)."""
+    """Default thinking mode for every model (env THINKING beats the yaml
+    `thinking:` key beats True)."""
+    env = os.environ.get("THINKING")
+    if env is not None:
+        return _truthy(env)
     val = _read_yaml().get("thinking")
     return True if val is None else _truthy(val)
-
-
-def load_temperature_global() -> float:
-    """Default sampling temperature for every model (`temperature:` beats 0.0)."""
-    return _num(_read_yaml().get("temperature"), 0.0)
 
 
 def load_models() -> List[Dict[str, Any]]:
     """Return the resident model list with assigned ports + base URLs.
 
-    Falls back to a single judge-class model if the config file is absent or empty.
+    Falls back to a single judge-class model (env MODEL_ID, default Gemma-4-E4B)
+    if the config file is absent or empty.
     """
     raw = list(_read_yaml().get("models") or [])
     if not raw:
-        raw = [{"id": "google/gemma-4-E4B-it", "params_b": 8, "weight": 1.5, "role": "judge"}]
+        raw = [{"id": os.environ.get("MODEL_ID", "google/gemma-4-E4B-it"),
+                "params_b": 8, "weight": 1.5, "role": "judge"}]
 
     g_quant = load_quant_global()
     g_think = load_thinking_global()
-    g_temp = load_temperature_global()
-    cfg = _read_yaml()
-    base_port = int(_num(cfg.get("vllm_base_port"), 8001))
-    host = str(cfg.get("vllm_host") or "localhost")
+    base_port = int(os.environ.get("VLLM_BASE_PORT", os.environ.get("VLLM_PORT", "8001")))
+    host = os.environ.get("VLLM_HOST", "localhost")
     out: List[Dict[str, Any]] = []
     for i, m in enumerate(raw):
-        mid = str(m.get("id", "")).strip()
+        mid = _expand(m.get("id", "")).strip()
         mid = _MODEL_ALIASES.get(mid.lower(), mid)   # 'gemma' shortcut -> repo id
         if not mid:
             continue
@@ -141,7 +159,6 @@ def load_models() -> List[Dict[str, Any]]:
         # Per-model `quantization:` / `thinking:` override the global defaults.
         quant = _norm_quant(m["quantization"]) if m.get("quantization") is not None else g_quant
         thinking = _truthy(m["thinking"]) if m.get("thinking") is not None else g_think
-        temperature = _num(m.get("temperature"), g_temp) if m.get("temperature") is not None else g_temp
         # Optional per-model `gpu_memory_utilization:` (0–1) pins this server's vLLM
         # --gpu-memory-utilization instead of the auto split; ignored if out of range.
         gmu = m.get("gpu_memory_utilization")
@@ -156,7 +173,6 @@ def load_models() -> List[Dict[str, Any]]:
             "role": str(m.get("role", "")).strip().lower(),   # "generator"|"judge"|""
             "quant": quant,                                   # "none"|"4bit"|"8bit"|...
             "thinking": thinking,                             # reasoning-call think mode
-            "temperature": temperature,                       # request sampling temperature
             "gpu_mem_util": gmu,                              # explicit override or None
             "port": port,
             "base_url": f"http://{host}:{port}/v1",
@@ -166,8 +182,11 @@ def load_models() -> List[Dict[str, Any]]:
 
 def load_mode() -> str:
     """Logic flow: 'arbiter' (2 thinking generators -> the judge picks + re-derives
-    premises_used/explanation) or 'vote' (cascade weighted vote). Default
-    'arbiter'."""
+    premises_used/explanation) or 'vote' (cascade weighted vote). Env LOGIC_MODE
+    overrides the yaml `mode:` key. Default 'arbiter'."""
+    env = os.environ.get("LOGIC_MODE")
+    if env:
+        return env.strip().lower()
     m = _read_yaml().get("mode")
     return str(m).strip().lower() if m else "arbiter"
 
@@ -178,8 +197,12 @@ def load_swap() -> bool:
     When on (the default) and the line-up has a `judge` role plus >=1 generator,
     the generators stay co-resident and the judge is woken (generators slept)
     only for its arbitration call — so peak VRAM is max(generators, judge), not
-    their sum. This lets the 2x4B + 8B line-up run on a 24 GB card. Ignored outside
-    `arbiter` mode and for line-ups without an explicit judge (nothing to swap)."""
+    their sum. This lets the 2x4B + 8B line-up run on a 24 GB card. Env SWAP
+    overrides the yaml `swap:` key; default True. Ignored outside `arbiter` mode
+    and for line-ups without an explicit judge (nothing to swap)."""
+    env = os.environ.get("SWAP")
+    if env is not None:
+        return env.strip().lower() in ("1", "true", "yes", "on")
     val = _read_yaml().get("swap")
     if val is None:
         return True
@@ -198,7 +221,11 @@ def swap_active(models: List[Dict[str, Any]]) -> bool:
 
 def max_resident_b() -> float:
     """The residency budget the launch guard enforces. The committee limit is 8B
-    total at any moment; a larger value here is the operator's explicit call."""
+    total at any moment; a larger value here is the operator's explicit call (env
+    MAX_RESIDENT_B beats the yaml `max_resident_b:` key beats the 8.0 default)."""
+    env = os.environ.get("MAX_RESIDENT_B")
+    if env:
+        return float(env)
     val = _read_yaml().get("max_resident_b")
     return float(val) if val is not None else 8.0
 
@@ -222,7 +249,7 @@ def gpu_fractions(models: List[Dict[str, Any]]) -> List[float]:
 
     A per-model `gpu_memory_utilization:` in the yaml (carried as `gpu_mem_util`)
     pins that server's fraction verbatim and bypasses the auto split for it."""
-    total = _num(_read_yaml().get("gpu_mem_util"), 0.90)
+    total = float(os.environ.get("GPU_MEM_UTIL", "0.90"))
     if not models:
         return []
 
@@ -250,28 +277,6 @@ def gpu_fractions(models: List[Dict[str, Any]]) -> List[float]:
         _pinned(m) if _pinned(m) is not None else round(max(total * w / s, 0.05), 4)
         for m, w in zip(models, weights)
     ]
-
-
-def serve_settings() -> Dict[str, Any]:
-    """Launcher settings controlled by serve/logic_config.yaml."""
-    cfg = _read_yaml()
-    return {
-        "gateway_port": int(_num(cfg.get("gateway_port"), 8000)),
-        "max_model_len": int(_num(cfg.get("max_model_len"), 8192)),
-        "max_num_seqs": int(_num(cfg.get("max_num_seqs"), 16)),
-        "residency_sleep_level": int(_num(cfg.get("residency_sleep_level"), 1)),
-        "residency_op_timeout": _num(cfg.get("residency_op_timeout"), 180),
-        "residency_sleep_retries": int(_num(cfg.get("residency_sleep_retries"), 3)),
-        "gateway_llm_timeout": _num(cfg.get("gateway_llm_timeout"), 240),
-        "logic_think_tokens": int(_num(cfg.get("logic_think_tokens"), 4096)),
-        "physics_think_tokens": int(_num(cfg.get("physics_think_tokens"), _num(cfg.get("logic_think_tokens"), 4096))),
-        "physics_max_new_tokens": int(_num(cfg.get("physics_max_new_tokens"), 768)),
-        "physics_llm_explanation": _truthy(cfg.get("physics_llm_explanation", False)),
-        "physics_cascade": _truthy(cfg.get("physics_cascade", True)),
-        "physics_llm_fallback": _truthy(cfg.get("physics_llm_fallback", True)),
-        "enforce_eager": _truthy(cfg.get("enforce_eager", True)),
-        "language_model_only": _truthy(cfg.get("language_model_only", True)),
-    }
 
 
 def print_launch_plan() -> None:
@@ -306,36 +311,19 @@ def print_launch_plan() -> None:
         )
         sys.exit(2)
     if total > 8.0 + 1e-9:
-        if swap:
-            gens_sum = sum(m["params_b"] for m in models if m.get("role") != "judge")
-            judge_b = max((m["params_b"] for m in models if m.get("role") == "judge"),
-                          default=0.0)
-            peak = max(gens_sum, judge_b)
-            sys.stderr.write(
-                f"[config] NOTE: line-up DECLARES {total:g}B total, but SWAP keeps only one "
-                f"group on the GPU at a time -> peak resident ~{peak:g}B. Load/unload to stay "
-                f"<= 8B at any single moment is allowed (Q3); max_resident_b={limit:g} bounds "
-                f"the total-that-exists, not the momentary GPU load.\n"
-            )
-        else:
-            sys.stderr.write(
-                f"[config] WARNING: {total:g}B resident ALL AT ONCE (swap OFF) — over the "
-                f"committee's 8B-at-any-moment limit (Submission Guide 6.3; MoE counts TOTAL "
-                f"params). Launching anyway because max_resident_b={limit:g} was set explicitly.\n"
-            )
-    settings = serve_settings()
+        sys.stderr.write(
+            f"[config] WARNING: resident models total {total:g}B — over the committee's "
+            f"8B-at-any-moment limit (Submission Guide 6.3; MoE counts TOTAL params). "
+            f"Launching anyway because max_resident_b={limit:g} was set explicitly.\n"
+        )
     sys.stdout.write(f"#swap\t{1 if swap else 0}\n")
-    for key, value in settings.items():
-        if isinstance(value, bool):
-            value = 1 if value else 0
-        sys.stdout.write(f"#{key}\t{value}\n")
     for m, frac in zip(models, gpu_fractions(models)):
         flags = " ".join(quant_flags(m["quant"])) or "-"
         sys.stdout.write(f"{m['id']}\t{m['port']}\t{frac}\t{m['role'] or '-'}\t{flags}\n")
     desc = ", ".join(
-        "{0} ({1:g}B, {2}, w={3:g}, q={4}, think={5}, temp={6:g})".format(
+        "{0} ({1:g}B, {2}, w={3:g}, q={4}, think={5})".format(
             m["id"], m["params_b"], m["role"] or "voter", m["weight"], m["quant"],
-            "on" if m["thinking"] else "off", m["temperature"])
+            "on" if m["thinking"] else "off")
         for m in models)
     if swap:
         gens = [m for m in models if m.get("role") != "judge"]

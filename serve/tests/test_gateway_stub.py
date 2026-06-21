@@ -75,6 +75,15 @@ def test_type1_free_form_number():
     assert r["unit"] == ""
 
 
+def test_type1_free_form_numbers_are_plain():
+    import gateway.logic_adapter as la
+
+    assert la._plain_free_form_answer("1.2300e-4") == "0.000123"
+    assert la._plain_free_form_answer("17,28") == "17.28"
+    assert la._plain_free_form_answer("$42$") == "42"
+    assert la._plain_free_form_answer("Unknown") == "Unknown"
+
+
 def test_type2_physics_shape():
     q = {
         "query_id": "T2_0001",
@@ -239,6 +248,49 @@ def test_type2_invalid_judge_falls_back_to_deterministic(monkeypatch):
     assert r.reasoning.steps == ["solver step"]
 
 
+def test_type2_judge_json_allows_latex_explanation(monkeypatch):
+    import gateway.physics_adapter as pa
+    from gateway.schema import PredictQuery
+    from gateway.vllm_client import LLMClient
+
+    deterministic = pa._candidate(
+        label="deterministic", source="deterministic", answer="17.28", unit="N",
+        explanation="Deterministic solver answer.", steps=["solver step"], confidence=0.98,
+    )
+    adapter = _physics_adapter_with_stub_lineup(monkeypatch, deterministic)
+
+    def fake_chat(self, system, user, **kwargs):
+        if "physics.judge" in kwargs.get("log_context", ""):
+            return (
+                r'Final Answer: $0.02304 \text{ N}$.'
+                r'{"chosen": "self", "answer": 0.02304, "unit": "N", '
+                r'"explanation": "Use $r=\sqrt{(0.03)^2+(0.04)^2}$ and $F=q\cdot E$.", '
+                r'"steps": ["$r=\sqrt{(0.03)^2+(0.04)^2}=0.05$ m", '
+                r'"$F=(2\times 10^{-6})(11520)=0.02304$ N"]}'
+            )
+        return '{"answer": "17.28", "unit": "N", "explanation": "Generator.", "steps": ["gen step"], "confidence": 0.6}'
+
+    monkeypatch.setattr(LLMClient, "chat", fake_chat)
+    r = adapter.answer(PredictQuery(query_id="P-LATEX", type="type2", query="Find the force."))
+    assert r.answer == "0.02304"
+    assert r.unit == "N"
+    assert r.explanation.startswith("Use $r=\\sqrt")
+    assert r.reasoning.steps[0].startswith("$r=\\sqrt")
+
+
+def test_type2_answers_are_plain_numbers():
+    import gateway.physics_adapter as pa
+
+    assert pa._candidate(label="x", source="test", answer=0.02304)["answer"] == "0.02304"
+    assert pa._candidate(label="x", source="test", answer="1.2300e-4")["answer"] == "0.000123"
+    assert pa._candidate(label="x", source="test", answer="17,28")["answer"] == "17.28"
+    assert pa._candidate(label="x", source="test", answer=r"9\sqrt{3} x 10^-27")["answer"].startswith(
+        "0.000000000000000000000000015588"
+    )
+    assert pa._candidate(label="x", source="test", answer=r"\frac{1}{2}")["answer"] == "0.5"
+    assert pa._candidate(label="x", source="test", answer=r"$0.02304 \text{ N}$")["answer"] == "0.02304"
+
+
 def test_type2_uncertain_deterministic_falls_back_to_generator(monkeypatch):
     import gateway.physics_adapter as pa
     from gateway.schema import PredictQuery
@@ -306,10 +358,14 @@ def test_arbiter_generators_plus_gemma_judge(monkeypatch):
     assert all(0 <= i < len(q.premises) for i in r.premises_used)
 
 
-def test_config_lineup_roles_and_budget():
+def test_config_lineup_roles_and_budget(monkeypatch):
+    monkeypatch.delenv("MODEL_TEMPERATURE", raising=False)
+    monkeypatch.delenv("LLM_TEMPERATURE", raising=False)
     from gateway import config
     models = config.load_models()
     assert models, "expected at least one resident model"
+    assert all("temperature" in m for m in models)
+    assert all(m["temperature"] == 0.0 for m in models)
     # The line-up must fit the configured residency budget (the launch guard).
     assert config.total_params_b(models) <= config.max_resident_b() + 1e-9
     # Generate→judge design: at least one generator + exactly one 8B judge.
@@ -323,6 +379,24 @@ def test_config_lineup_roles_and_budget():
     gens_b = sum(m["params_b"] for m in models if m["role"] != "judge")
     peak = max(gens_b, judge["params_b"]) if config.swap_active(models) else config.total_params_b(models)
     assert peak <= 8.0 + 1e-9, f"peak resident {peak}B exceeds the 8B limit"
+
+
+def test_llm_client_uses_configured_temperature(monkeypatch):
+    from gateway.vllm_client import LLMClient
+
+    seen = {}
+
+    def fake_chat_vllm(self, system, user, **kwargs):
+        seen["temperature"] = kwargs["temperature"]
+        kwargs["raw_out"]("{}")
+        return "{}"
+
+    monkeypatch.setattr(LLMClient, "_chat_vllm", fake_chat_vllm)
+    client_under_test = LLMClient(mode="vllm", temperature=0.7)
+
+    client_under_test.chat("system", "user")
+
+    assert seen["temperature"] == 0.7
 
 
 def test_batch_list_input():

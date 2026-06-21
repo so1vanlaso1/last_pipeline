@@ -8,20 +8,20 @@ uses the shared serve/vLLM line-up in the same generate-to-judge shape as Type 1
         -> 8B judge solves independently and arbitrates across all three
 
 The public competition schema is unchanged. Model selection stays entirely in
-serve/logic_config.yaml and the serve env.
+serve/logic_config.yaml.
 """
 
 from __future__ import annotations
 
 import concurrent.futures
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import _paths  # noqa: F401  (side-effect: put physic_pipeline/src on sys.path)
+from . import config as cfg
 from .io_log import model_labels
 from .residency import get_manager
 from .schema import PredictQuery, PredictResult, Reasoning
-from .units import latex_to_ascii, to_ascii_answer, to_ascii_unit
+from .units import latex_to_ascii, to_ascii_answer, to_ascii_unit, to_plain_numeric_answer
 from .vllm_client import LLMClient, extract_last_json_object
 
 Judge = Tuple[LLMClient, float, str, str]
@@ -29,23 +29,24 @@ Judge = Tuple[LLMClient, float, str, str]
 _UNCERTAIN = {"", "uncertain", "unknown"}
 
 
-def _build_settings(base_url: str, model: str):
+def _build_settings(base_url: str, model: str, temperature: float = 0.0):
     """Construct exact_fama Settings in-code. The deterministic pipeline may still
     use the primary shared server for optional explanation rewrite only when that
     old knob is enabled."""
     from exact_fama.config import Settings  # type: ignore
 
-    mode = os.environ.get("GATEWAY_LLM", "vllm").lower()
+    mode = "vllm"
     use_llm = mode == "vllm"
     backend = "openai_compatible" if use_llm else "none"
-    use_llm_expl = use_llm and os.environ.get("PHYSICS_LLM_EXPLANATION", "0") == "1"
+    settings = cfg.serve_settings()
+    use_llm_expl = use_llm and bool(settings["physics_llm_explanation"])
     raw: Dict[str, Any] = {
         "model": {
             "backend": backend,
             "name": model,
             "vllm_base_url": base_url,
-            "temperature": 0.0,
-            "max_new_tokens": int(os.environ.get("PHYSICS_MAX_NEW_TOKENS", "768")),
+            "temperature": temperature,
+            "max_new_tokens": int(settings["physics_max_new_tokens"]),
         },
         "pipeline": {
             "use_llm_for_explanation": use_llm_expl,
@@ -83,10 +84,7 @@ def _split_lineup(judges: List[Judge]) -> Tuple[List[LLMClient], LLMClient]:
 
 
 def _physics_tokens() -> int:
-    return int(os.environ.get(
-        "PHYSICS_THINK_TOKENS",
-        os.environ.get("LOGIC_THINK_TOKENS", "4096"),
-    ))
+    return int(cfg.serve_settings()["physics_think_tokens"])
 
 
 def _valid_answer(answer: str) -> bool:
@@ -120,7 +118,7 @@ def _candidate(
     steps: Any = None,
     confidence: Any = 0.5,
 ) -> Dict[str, Any]:
-    ans = to_ascii_answer(answer)
+    ans = to_plain_numeric_answer(answer) or to_ascii_answer(answer)
     return {
         "label": label,
         "source": source,
@@ -167,20 +165,23 @@ class PhysicsAdapter:
             self.judges = list(judges or [])
         self.client = _primary_client(self.judges)
         mode = self.client.mode
+        settings = cfg.serve_settings()
         self.cascade_enabled = (
-            os.environ.get("PHYSICS_CASCADE", "1") == "1"
+            bool(settings["physics_cascade"])
             and mode in {"vllm", "stub"}
             and len(self.judges) >= 1
         )
         self.fallback_enabled = (
-            os.environ.get("PHYSICS_LLM_FALLBACK", "1") == "1"
+            bool(settings["physics_llm_fallback"])
             and self.client.mode == "vllm"
         )
         self.pipeline = None
         self.import_error: Optional[str] = None
         try:
             from exact_fama.pipeline import ExactFamaPipeline  # type: ignore
-            self.pipeline = ExactFamaPipeline(_build_settings(self.client.base_url, self.client.model))
+            self.pipeline = ExactFamaPipeline(
+                _build_settings(self.client.base_url, self.client.model, self.client.temperature)
+            )
         except Exception as exc:  # pragma: no cover - exercised only if deps missing
             self.import_error = f"{type(exc).__name__}: {exc}"
 
@@ -302,7 +303,10 @@ class PhysicsAdapter:
             '"explanation": <2-4 concise public sentences>, '
             '"steps": [<short public calculation steps>], '
             '"confidence": <number from 0 to 1>}. '
-            "Do not include the unit inside the answer field."
+            "For numerical answers, the answer field must be an unrounded plain "
+            "ASCII decimal or integer only, e.g. 0.02304; never use LaTeX, "
+            "fractions, radicals, currency symbols, commas, scientific notation, "
+            "or units inside the answer field."
         )
         user = (
             f"Problem:\n{question}\n\n"
@@ -315,7 +319,6 @@ class PhysicsAdapter:
                 system,
                 user,
                 max_tokens=_physics_tokens(),
-                temperature=0.0,
                 response_format=response_format,
                 log_context=f"type2 query_id={q.query_id or 'q'} stage=physics.generator",
                 loaded_models=model_labels(loaded),
@@ -344,7 +347,11 @@ class PhysicsAdapter:
             '"unit": <ASCII unit, or empty string>, '
             '"explanation": <2-5 concise public sentences>, '
             '"steps": [<short public calculation/checking steps>]}. '
-            "Do not include the unit inside the answer field."
+            "For numerical answers, the answer field must be an unrounded plain "
+            "ASCII decimal or integer only, e.g. 0.02304; never use LaTeX, "
+            "fractions, radicals, currency symbols, commas, scientific notation, "
+            "or units inside the answer field. LaTeX is allowed in explanation "
+            "and steps."
         )
         rendered = [_render_candidate("Deterministic", deterministic)]
         rendered.extend(
@@ -361,7 +368,6 @@ class PhysicsAdapter:
             system,
             user,
             max_tokens=_physics_tokens(),
-            temperature=0.0,
             log_context=f"type2 query_id={q.query_id or 'q'} stage=physics.judge",
             loaded_models=[arbiter.model],
         )
@@ -448,7 +454,9 @@ class PhysicsAdapter:
             "{\"answer\": <the numerical value only, as a plain number>, "
             "\"unit\": <the unit in ASCII, e.g. A, V, ohm, uF, V/m; empty string if none>, "
             "\"steps\": [<short reasoning steps>]}. "
-            "Do not include the unit inside the answer field."
+            "The answer field must be an unrounded plain ASCII decimal or integer "
+            "only; do not use LaTeX, fractions, radicals, commas, scientific "
+            "notation, or units inside the answer field."
         )
         try:
             data = self.client.chat_json(
@@ -461,7 +469,7 @@ class PhysicsAdapter:
             data = None
         if not isinstance(data, dict):
             return None
-        answer = to_ascii_answer(data.get("answer"))
+        answer = to_plain_numeric_answer(data.get("answer")) or to_ascii_answer(data.get("answer"))
         if not answer or answer.lower() in _UNCERTAIN:
             return None
         unit = to_ascii_unit(str(data.get("unit", "")))

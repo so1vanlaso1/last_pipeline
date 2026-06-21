@@ -4,8 +4,8 @@
 # from serve/logic_config.yaml (one vLLM server per model; the total must fit the
 # configured residency budget `max_resident_b` — the committee's value is 8B).
 #
-# Runtime serving knobs come from serve/logic_config.yaml. HF_TOKEN is still used
-# only for Hugging Face downloads of gated repos.
+# Env overrides: GATEWAY_PORT, VLLM_BASE_PORT, MAX_MODEL_LEN, GPU_MEM_UTIL,
+#                CF_TUNNEL, PHYSICS_LLM_FALLBACK, LOGIC_CONFIG, HF_TOKEN.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"      # <repo>/serve
@@ -13,16 +13,20 @@ ROOT="$(cd "$HERE/.." && pwd)"                            # <repo>
 LOGDIR="$HERE/logs"
 mkdir -p "$LOGDIR"
 
-GATEWAY_PORT="8000"
-MAX_MODEL_LEN="8192"
+GATEWAY_PORT="${GATEWAY_PORT:-8000}"
+VLLM_BASE_PORT="${VLLM_BASE_PORT:-8001}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.90}"
 # The gateway drives each server SEQUENTIALLY, so a small max concurrent-sequence
 # count is plenty — and it slashes vLLM's sampler-warmup memory (256 dummy seqs ×
 # a big vocab can OOM an 8B bf16 model on a 24 GB card right at startup). Raise it
 # only if you actually batch many requests at once.
-MAX_NUM_SEQS="16"
-CF_TUNNEL="0"   # legacy Cloudflare quick tunnel OFF by default; ngrok is the public tunnel
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-16}"
+CF_TUNNEL="${CF_TUNNEL:-1}"
 
-export GATEWAY_LLM="vllm"
+export VLLM_BASE_PORT GPU_MEM_UTIL
+export GATEWAY_LLM="${GATEWAY_LLM:-vllm}"
+export PHYSICS_LLM_FALLBACK="${PHYSICS_LLM_FALLBACK:-1}"
 # Sleep/wake swap level. DEFAULT 1 = RAM offload (the slept group's already-quantized
 # weights are parked in CPU RAM and copied back verbatim on wake). This is REQUIRED for
 # the FP8 (8bit) line-up: level 2 (discard + reload-from-disk) RE-QUANTIZES on wake and
@@ -30,7 +34,7 @@ export GATEWAY_LLM="vllm"
 # Level 1 also wakes faster (RAM copy, ~1s) and still moves weights OFF the GPU, so the
 # "≤8B loaded on GPU at any moment" rule and the OOM budget both still hold. Set 2 only
 # if you switch the whole line-up to 4bit/bf16 (which survive a disk reload).
-export RESIDENCY_SLEEP_LEVEL="1"
+export RESIDENCY_SLEEP_LEVEL="${RESIDENCY_SLEEP_LEVEL:-1}"
 export PYTHONPATH="$HERE:$ROOT/physic_pipeline/src:$ROOT/logic_pipeline/src${PYTHONPATH:+:$PYTHONPATH}"
 
 if [ -d "$ROOT/.venv" ]; then
@@ -51,18 +55,10 @@ cat "$LOGDIR/config.err" >&2     # show the "[config] line-up: …" summary
 
 # ── Parse the plan into parallel arrays + the swap flag ───────────────────────
 SWAP=0
-ENFORCE_EAGER=1
-LANGUAGE_MODEL_ONLY=1
 MIDS=(); PORTS=(); FRACS=(); ROLES=(); QUANTS=()
 while IFS=$'\t' read -r F1 F2 F3 F4 F5; do
     [ -z "${F1:-}" ] && continue
     if [ "$F1" = "#swap" ]; then SWAP="${F2:-0}"; continue; fi
-    if [ "$F1" = "#gateway_port" ]; then GATEWAY_PORT="${F2:-8000}"; continue; fi
-    if [ "$F1" = "#max_model_len" ]; then MAX_MODEL_LEN="${F2:-8192}"; continue; fi
-    if [ "$F1" = "#max_num_seqs" ]; then MAX_NUM_SEQS="${F2:-16}"; continue; fi
-    if [ "$F1" = "#residency_sleep_level" ]; then RESIDENCY_SLEEP_LEVEL="${F2:-1}"; export RESIDENCY_SLEEP_LEVEL; continue; fi
-    if [ "$F1" = "#enforce_eager" ]; then ENFORCE_EAGER="${F2:-1}"; continue; fi
-    if [ "$F1" = "#language_model_only" ]; then LANGUAGE_MODEL_ONLY="${F2:-1}"; continue; fi
     case "$F1" in \#*) continue ;; esac
     MIDS+=("$F1"); PORTS+=("$F2"); FRACS+=("$F3"); ROLES+=("${F4:-}"); QUANTS+=("${F5:-}")
 done <<< "$PLAN"
@@ -78,9 +74,8 @@ server_up() { curl -fsS "http://localhost:$1/v1/models" >/dev/null 2>&1; }
 
 download_model() {
     local MID="$1"
-    # The default line-up (Qwen3-4B + Qwen3-4B-Instruct-2507 + gemma-4-E4B-it) is
-    # ungated — no HF_TOKEN needed. For a gated repo, `export HF_TOKEN=hf_...` and it
-    # is passed through.
+    # The default line-up (Qwen3.5 + Gemma-4) is ungated — no HF_TOKEN needed. If you
+    # point at a gated repo, just `export HF_TOKEN=hf_...` and it is passed through.
     echo "[run] downloading ${MID} (if not cached)…"
     HF_TOKEN="${HF_TOKEN:-}" python - "$MID" <<'PY' || echo "[run] (download will fall back to vLLM's own fetch)"
 import os, sys
@@ -95,15 +90,8 @@ PY
 
 start_one() {                                    # MID PORT FRAC QUANT
     local MID="$1" PORT="$2" FRAC="$3" QUANT="$4"
-    local old_pid
-    old_pid="$(cat "$LOGDIR/vllm_${PORT}.pid" 2>/dev/null || true)"
-    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-        echo "[run] restarting vLLM ${MID} on :${PORT} from logic_config.yaml"
-        kill "$old_pid" 2>/dev/null || true
-        for _ in $(seq 1 60); do
-            kill -0 "$old_pid" 2>/dev/null || break
-            sleep 1
-        done
+    if server_up "$PORT"; then
+        echo "[run] vLLM for ${MID} already up on :${PORT}"; return 0
     fi
     download_model "$MID"
     local QARGS=(); [ -n "$QUANT" ] && [ "$QUANT" != "-" ] && read -ra QARGS <<< "$QUANT"
@@ -113,37 +101,33 @@ start_one() {                                    # MID PORT FRAC QUANT
     # processes coexisting, and a slept process's GPU residual shrinks (~4.7→~4.1 GiB)
     # without a cudagraph pool — that headroom is what keeps the awake group from
     # OOMing the 32 GB card. Set ENFORCE_EAGER=0 to restore graphs if VRAM allows.
-    local EAGERF=(); [ "$ENFORCE_EAGER" = "1" ] && EAGERF=(--enforce-eager)
+    local EAGERF=(); [ "${ENFORCE_EAGER:-1}" = "1" ] && EAGERF=(--enforce-eager)
     # VIT_ATTN_BACKEND pins the multimodal vision-tower attention backend. On Blackwell
     # GPUs (RTX 50xx) with an older driver, the prebuilt flash-attn ViT kernel can fail
     # with cudaErrorUnsupportedPtxVersion; set VIT_ATTN_BACKEND=TORCH_SDPA to avoid it.
     local VITF=(); [ -n "${VIT_ATTN_BACKEND:-}" ] && VITF=(--mm-encoder-attn-backend "$VIT_ATTN_BACKEND")
-    # The logic + physics flow is TEXT-ONLY. The judge (gemma-4-E4B-it) ships as a
-    # vision-language checkpoint; left alone, vLLM loads its
+    # The logic + physics flow is TEXT-ONLY, but the default line-up (Qwen3.5-4B,
+    # Gemma-4) ships as vision-language checkpoints. Left alone, vLLM loads their
     # vision encoder AND memory-profiles it with a max-size dummy image — a ~7 GB
     # peak that pushed the co-resident generator on :8001 to "Available KV cache
     # memory: -7.3 GiB" and a hard ValueError on its tight gpu_frac slice. The
     # --language-model-only flag drops the encoder entirely (no vision profiling).
     # Set LANGUAGE_MODEL_ONLY=0 to restore vision for an image line-up.
-    local LMOF=(); [ "$LANGUAGE_MODEL_ONLY" = "1" ] && LMOF=(--language-model-only)
-    # Do not let each HF repo's generation_config.json become the server default
-    # temperature/top_p/top_k. The gateway sends per-request sampling knobs from
-    # logic_config.yaml, and vLLM defaults are the desired fallback for direct calls.
-    local GENCFGF=(--generation-config vllm)
+    local LMOF=(); [ "${LANGUAGE_MODEL_ONLY:-1}" = "1" ] && LMOF=(--language-model-only)
     echo "[run] starting vLLM ${MID} on :${PORT} (gpu_frac=${FRAC}, quant='${QUANT}', log: $LOGDIR/vllm_${PORT}.log)"
     if command -v vllm >/dev/null 2>&1; then
         nohup vllm serve "$MID" \
             --host 0.0.0.0 --port "$PORT" --served-model-name "$MID" \
             --max-model-len "$MAX_MODEL_LEN" --gpu-memory-utilization "$FRAC" --dtype auto \
             --max-num-seqs "$MAX_NUM_SEQS" \
-            "${SLEEPF[@]}" "${EAGERF[@]}" "${VITF[@]}" "${LMOF[@]}" "${GENCFGF[@]}" "${QARGS[@]}" \
+            "${SLEEPF[@]}" "${EAGERF[@]}" "${VITF[@]}" "${LMOF[@]}" "${QARGS[@]}" \
             > "$LOGDIR/vllm_${PORT}.log" 2>&1 &
     else
         nohup python -m vllm.entrypoints.openai.api_server \
             --model "$MID" --host 0.0.0.0 --port "$PORT" --served-model-name "$MID" \
             --max-model-len "$MAX_MODEL_LEN" --gpu-memory-utilization "$FRAC" --dtype auto \
             --max-num-seqs "$MAX_NUM_SEQS" \
-            "${SLEEPF[@]}" "${EAGERF[@]}" "${VITF[@]}" "${LMOF[@]}" "${GENCFGF[@]}" "${QARGS[@]}" \
+            "${SLEEPF[@]}" "${EAGERF[@]}" "${VITF[@]}" "${LMOF[@]}" "${QARGS[@]}" \
             > "$LOGDIR/vllm_${PORT}.log" 2>&1 &
     fi
     echo $! > "$LOGDIR/vllm_${PORT}.pid"
@@ -230,60 +214,23 @@ for PORT in "${GEN_PORTS[@]:1}"; do
 done
 
 # ── 2. Gateway (the /predict endpoint) ───────────────────────────────────────
-if [ -f "$LOGDIR/gateway.pid" ]; then
-    old_gateway="$(cat "$LOGDIR/gateway.pid" 2>/dev/null || true)"
-    if [ -n "$old_gateway" ] && kill -0 "$old_gateway" 2>/dev/null; then
-        echo "[run] restarting gateway on :${GATEWAY_PORT} so logic_config.yaml is reloaded"
-        kill "$old_gateway" 2>/dev/null || true
-        for _ in $(seq 1 20); do
-            kill -0 "$old_gateway" 2>/dev/null || break
-            sleep 0.5
-        done
-    fi
+if curl -fsS "http://localhost:${GATEWAY_PORT}/health" >/dev/null 2>&1; then
+    echo "[run] gateway already up on :${GATEWAY_PORT}"
+else
+    echo "[run] starting gateway on :${GATEWAY_PORT} (log: $LOGDIR/gateway.log)"
+    nohup uvicorn gateway.app:app --host 0.0.0.0 --port "$GATEWAY_PORT" --workers 1 \
+        > "$LOGDIR/gateway.log" 2>&1 &
+    echo $! > "$LOGDIR/gateway.pid"
 fi
-echo "[run] starting gateway on :${GATEWAY_PORT} (log: $LOGDIR/gateway.log)"
-nohup uvicorn gateway.app:app --host 0.0.0.0 --port "$GATEWAY_PORT" --workers 1 \
-    > "$LOGDIR/gateway.log" 2>&1 &
-echo $! > "$LOGDIR/gateway.pid"
 for _ in $(seq 1 120); do
     curl -fsS "http://localhost:${GATEWAY_PORT}/health" >/dev/null 2>&1 && break
     sleep 1
 done
 echo "[run] gateway ready."
 
-# ── 3. Public URL (ngrok primary; Cloudflare quick tunnel legacy fallback) ────
+# ── 3. Public URL (Cloudflare quick tunnel) ──────────────────────────────────
 PUBLIC_URL=""
-
-# ngrok (default ON) — the public static tunnel. Reads the agent authtoken stored by
-# `ngrok config add-authtoken <TOKEN>`. Set NGROK_DOMAIN=<reserved-domain> to pin a
-# specific static domain (custom names need a PAID plan; on Free the account's single
-# assigned domain is used automatically and is stable across restarts). NGROK=0 disables.
-NGROK="${NGROK:-1}"
-NGROK_BIN="$HERE/ngrok"
-if [ "$NGROK" = "1" ] && [ -x "$NGROK_BIN" ]; then
-    if [ ! -f "${HOME}/.config/ngrok/ngrok.yml" ] && [ -z "${NGROK_AUTHTOKEN:-}" ]; then
-        echo "[run] ngrok: no authtoken configured — skipping (run: $NGROK_BIN config add-authtoken <TOKEN>)" >&2
-    else
-        pkill -f 'ngrok http' 2>/dev/null || true        # one agent session per account
-        sleep 1
-        NGROK_URLF=(); [ -n "${NGROK_DOMAIN:-}" ] && NGROK_URLF=(--url="https://${NGROK_DOMAIN}")
-        echo "[run] starting ngrok → http://localhost:${GATEWAY_PORT}${NGROK_DOMAIN:+ (domain ${NGROK_DOMAIN})}"
-        nohup "$NGROK_BIN" http "$GATEWAY_PORT" "${NGROK_URLF[@]}" --log=stdout --log-format=logfmt \
-            > "$LOGDIR/ngrok.log" 2>&1 &
-        echo $! > "$LOGDIR/ngrok.pid"
-        for _ in $(seq 1 40); do
-            PUBLIC_URL="$(grep -oE 'url=https://[A-Za-z0-9.:/-]+' "$LOGDIR/ngrok.log" 2>/dev/null | head -n1 | sed 's/^url=//')"
-            [ -n "$PUBLIC_URL" ] && break
-            grep -q 'ERR_NGROK' "$LOGDIR/ngrok.log" 2>/dev/null && { echo "[run] ngrok failed — see $LOGDIR/ngrok.log" >&2; break; }
-            sleep 1
-        done
-        [ -n "$PUBLIC_URL" ] && echo "[run] ngrok URL: $PUBLIC_URL"
-    fi
-fi
-
-# Cloudflare quick tunnel — legacy fallback, used only if ngrok produced no URL and
-# CF_TUNNEL=1. Gives an EPHEMERAL *.trycloudflare.com URL that changes every restart.
-if [ -z "$PUBLIC_URL" ] && [ "$CF_TUNNEL" = "1" ]; then
+if [ "$CF_TUNNEL" = "1" ]; then
     CF_BIN="$HERE/cloudflared"
     if [ ! -x "$CF_BIN" ]; then
         echo "[run] downloading cloudflared…"
@@ -311,50 +258,18 @@ fi
 PUBLIC_IP="${PUBLIC_IPADDR:-$(curl -fsS https://api.ipify.org 2>/dev/null || true)}"
 URLS_FILE="$HERE/submission/urls.txt"
 mkdir -p "$HERE/submission"
-if [ -n "$PUBLIC_URL" ]; then
-    BASE="$PUBLIC_URL"
-else
-    BASE="http://${PUBLIC_IP:-<PUBLIC_IP>}:${GATEWAY_PORT}"
-fi
 {
     echo "# EXACT 2026 — submission URLs (generated $(date -u '+%Y-%m-%dT%H:%M:%SZ'))"
-    echo "PREDICT_URL=${BASE}/predict"
-    echo "#"
-    echo "# One /v1/models per vLLM server (Submission Guide §6.3 — 'a /v1/models URL"
-    echo "# for each vLLM server'). Proxied through this single host, each reachable"
-    echo "# even while that model is swapped to sleep (the list is metadata)."
-    for idx in "${!MIDS[@]}"; do
-        echo "MODELS_URL_${PORTS[$idx]}=${BASE}/vllm/${PORTS[$idx]}/v1/models   # ${MIDS[$idx]} (${ROLES[$idx]:-voter})"
-    done
-    echo "#"
-    echo "# Aggregated list of every resident model (convenience):"
-    echo "MODELS_URL=${BASE}/v1/models"
-    echo "# Live GPU-residency proof (<=8B loaded-and-running at any instant):"
-    echo "HEALTH_URL=${BASE}/health"
-    if [ -z "$PUBLIC_URL" ]; then
-        echo "#"
+    if [ -n "$PUBLIC_URL" ]; then
+        echo "PREDICT_URL=${PUBLIC_URL}/predict"
+        echo "MODELS_URL=${PUBLIC_URL}/v1/models"
+    else
+        echo "PREDICT_URL=http://${PUBLIC_IP:-<PUBLIC_IP>}:${GATEWAY_PORT}/predict"
+        echo "MODELS_URL=http://${PUBLIC_IP:-<PUBLIC_IP>}:${GATEWAY_PORT}/v1/models"
         echo "# (No tunnel — using vast.ai port mapping? replace host:port with the"
         echo "#  external mapping vast.ai shows for internal port ${GATEWAY_PORT}.)"
     fi
-    # OPTIONAL: DIRECT vLLM host /v1/models (the literal §6.2 '<your-vllm-host>/v1/models',
-    # hitting each raw vLLM server instead of the gateway proxy). Only emitted if you
-    # actually expose the vLLM ports — set VLLM_PUBLIC_BASE=<public-host-or-ip>, and for
-    # any port vast.ai REMAPS to a different external port, override the whole URL with
-    # VLLM_PUBLIC_<port>=http://host:extport.  ⚠ SECURITY: with SWAP on, vLLM runs in dev
-    # mode and the same port also serves /sleep & /wake_up — only expose these to a
-    # trusted committee; otherwise prefer the read-only /vllm/<port>/v1/models proxy above.
-    if [ -n "${VLLM_PUBLIC_BASE:-}" ] || compgen -A variable | grep -q '^VLLM_PUBLIC_[0-9]'; then
-        echo "#"
-        echo "# DIRECT raw-vLLM-host /v1/models (§6.2):"
-        for idx in "${!MIDS[@]}"; do
-            p="${PORTS[$idx]}"; ov="VLLM_PUBLIC_${p}"
-            if [ -n "${!ov:-}" ]; then
-                echo "MODELS_URL_${p}_DIRECT=${!ov%/}/v1/models   # ${MIDS[$idx]}"
-            elif [ -n "${VLLM_PUBLIC_BASE:-}" ]; then
-                echo "MODELS_URL_${p}_DIRECT=http://${VLLM_PUBLIC_BASE}:${p}/v1/models   # ${MIDS[$idx]} (override w/ VLLM_PUBLIC_${p} if vast.ai remaps this port)"
-            fi
-        done
-    fi
+    echo "# /v1/models aggregates every resident model so the committee can verify the line-up."
 } > "$URLS_FILE"
 
 echo

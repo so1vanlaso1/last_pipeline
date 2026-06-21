@@ -7,8 +7,12 @@
 
 from __future__ import annotations
 
+import ast
+from decimal import Decimal, InvalidOperation
+import math
+import operator
 import re
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Superscripts/subscripts → ASCII digits, and a few non-ASCII operators.
 _SUPERSCRIPT = str.maketrans({
@@ -75,6 +79,136 @@ def to_ascii_answer(answer: Optional[str]) -> str:
     a = (a.replace("×", "x").replace("·", ".")
           .replace("−", "-").replace("–", "-"))
     return a.strip()
+
+
+_PLAIN_NUMBER_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
+_COMMON_UNIT_SUFFIX_RE = re.compile(
+    r"\s+(?:N|J|A|V|W|C|F|H|T|Hz|s|m|kg|ohm|V/m|N/C|rad/s)\.?$", re.I
+)
+_SAFE_BINOPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Pow: operator.pow,
+}
+_SAFE_UNARYOPS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+
+
+def _format_plain_decimal(dec: Decimal) -> str:
+    out = format(dec, "f")
+    if "." in out:
+        out = out.rstrip("0").rstrip(".")
+    if out in {"", "-0"}:
+        out = "0"
+    return out
+
+
+def _format_plain_float(value: float) -> Optional[str]:
+    if not math.isfinite(value):
+        return None
+    # 17 significant digits are enough to preserve a Python float round-trip; Decimal
+    # then expands any exponent form into a plain decimal string for the API.
+    return _format_plain_decimal(Decimal(format(value, ".17g")))
+
+
+def _safe_eval_numeric_expr(expr: str) -> Optional[float]:
+    def walk(node: ast.AST) -> float:
+        if isinstance(node, ast.Expression):
+            return walk(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return float(node.value)
+        if isinstance(node, ast.BinOp) and type(node.op) in _SAFE_BINOPS:
+            left = walk(node.left)
+            right = walk(node.right)
+            if isinstance(node.op, ast.Pow) and abs(right) > 400:
+                raise ValueError("exponent too large")
+            return float(_SAFE_BINOPS[type(node.op)](left, right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in _SAFE_UNARYOPS:
+            return float(_SAFE_UNARYOPS[type(node.op)](walk(node.operand)))
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "sqrt"
+            and len(node.args) == 1
+            and not node.keywords
+        ):
+            return math.sqrt(walk(node.args[0]))
+        raise ValueError(f"unsupported expression: {type(node).__name__}")
+
+    try:
+        tree = ast.parse(expr, mode="eval")
+        return walk(tree)
+    except Exception:
+        return None
+
+
+def _numeric_expression_to_plain(text: str) -> Optional[str]:
+    expr = str(text or "").strip()
+    if not expr:
+        return None
+    if expr.count(",") == 1 and "." not in expr:
+        expr = expr.replace(",", ".")
+    expr = expr.strip().strip("$").strip()
+    expr = re.sub(r"\\text\s*\{[^}]*\}", "", expr)
+    expr = _COMMON_UNIT_SUFFIX_RE.sub("", expr).strip()
+    if _PLAIN_NUMBER_RE.fullmatch(expr):
+        try:
+            return _format_plain_decimal(Decimal(expr))
+        except InvalidOperation:
+            return None
+    sci = re.fullmatch(
+        r"([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*(?:x|\*|×|\\times)\s*10\s*\^\s*\{?\s*([-+]?\d+)\s*\}?",
+        expr,
+        flags=re.I,
+    )
+    if sci:
+        try:
+            return _format_plain_decimal(Decimal(sci.group(1)) * (Decimal(10) ** int(sci.group(2))))
+        except InvalidOperation:
+            return None
+    expr = expr.replace("×", "*").replace("⋅", "*").replace("·", "*")
+    expr = expr.replace(r"\times", "*").replace(r"\cdot", "*")
+    expr = re.sub(r"\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}", r"(\1)/(\2)", expr)
+    expr = re.sub(r"\\sqrt\s*\{([^{}]+)\}", r"sqrt(\1)", expr)
+    expr = re.sub(r"sqrt\s*\{([^{}]+)\}", r"sqrt(\1)", expr)
+    expr = expr.replace(r"\sqrt", "sqrt")
+    expr = re.sub(r"(?i)(\d|\))\s*[x*]\s*10\s*\^\s*\{?\s*([-+]?\d+)\s*\}?", r"\1*10**\2", expr)
+    expr = re.sub(r"(?i)(\d|\))\s*x\s*(?=\d|\()", r"\1*", expr)
+    expr = expr.replace("^", "**")
+    expr = re.sub(r"(?<=\d)\s+(?=\d)", "*", expr)
+    expr = re.sub(r"(?<=\d)\s*(?=sqrt\s*\()", "*", expr)
+    expr = re.sub(r"(?<=\))\s*(?=\()", "*", expr)
+    expr = re.sub(r"(?<=\d)\s*(?=\()", "*", expr)
+    expr = re.sub(r"(?<=\))\s*(?=\d)", "*", expr)
+    if not re.fullmatch(r"[0-9eE+\-*/().\s]*sqrt[0-9eE+\-*/().\s]*|[0-9eE+\-*/().\s]+", expr):
+        return None
+    value = _safe_eval_numeric_expr(expr)
+    return _format_plain_float(value) if value is not None else None
+
+
+def to_plain_numeric_answer(answer: Any) -> Optional[str]:
+    """Return a plain ASCII decimal/integer when `answer` is numeric.
+
+    Simple numbers are expanded exactly through Decimal. For math syntax such as
+    sqrt/fractions, this uses a small safe evaluator and emits a plain decimal.
+    """
+    if answer is None:
+        return None
+    raw = str(answer)
+    text = to_ascii_answer(raw).strip()
+    if not text:
+        return None
+    if text.count(",") == 1 and "." not in text:
+        text = text.replace(",", ".")
+    text = text.strip().strip("$")
+    if not _PLAIN_NUMBER_RE.fullmatch(text):
+        return _numeric_expression_to_plain(raw) or _numeric_expression_to_plain(text)
+    try:
+        dec = Decimal(text)
+    except InvalidOperation:
+        return None
+    return _format_plain_decimal(dec)
 
 
 # ── LaTeX → ASCII pre-extraction normalization (Type 2 physics) ──────────────

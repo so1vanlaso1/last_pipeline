@@ -17,42 +17,25 @@
 #        ▼
 #     deterministic code → the competition result object (Section 4 schema)
 #
-# Type 2 flow (physics solver-first generate->judge):
-#
-#     Physics question
-#        -> deterministic physics solver produces the first candidate answer
-#        -> the two 4B generator models answer concurrently using the deterministic
-#           answer as reference only
-#        -> the generators are put to sleep and the 8B judge is woken
-#        -> the judge solves independently, checks all three candidates
-#           (deterministic + two LLM generators), and emits the final answer/unit
-#        -> deterministic gateway code builds the competition result object
-#
-# This file is named `logic_config.yaml` for historical reasons. In the serving
-# gateway it is the shared vLLM line-up config for BOTH Type 1 and Type 2.
-# Do not create a separate physics model config file unless you also change
-# gateway/config.py and run_server.sh; the serve folder is intentionally the only
-# place where the LLM model lineup is set.
+# Type 2 (physics) uses the FIRST generator for its optional LLM calls.
 #
 # ── THE LINE-UP (param count the committee counts = TOTAL params) ────────────
-#   Qwen/Qwen3-4B                 4B   (ungated, text, dense)     generator (non-thinking)
-#   Qwen/Qwen3-4B-Instruct-2507   4B   (ungated, text, dense)     generator (non-thinking)
+#   Qwen/Qwen3.5-4B               4B   (ungated, VLM)             generator (non-thinking)
+#   Qwen/Qwen3-4B-Instruct-2507   4B   (ungated, text)            generator (non-thinking)
 #   google/gemma-4-E4B-it         8B   (ungated, ~8B total)       judge     (thinking)
-#   All TEXT-ONLY → all SLEEP CLEAN (slept ~0.73 GiB). A VLM (e.g. Qwen3.5-4B)
-#   was rejected as a generator: its weights would not sleep-evict (stuck ~4.4 GiB).
 #
 #   All three are UNGATED — no HF_TOKEN required. Point the judge at any other repo
-#   by editing its entry under `models:`.
+#   via env JUDGE_MODEL / JUDGE_PARAMS_B (see its entry under `models:`).
 #
 # ── THE HARD INVARIANT (contest compliance + OOM safety) ─────────────────────
 #   At EVERY instant EXACTLY ONE group has weights on the GPU:
-#       {both 4B generators}  XOR  {the 8B judge}    — never all three, never a mix.
+#       {both 4B generators}  XOR  {the 8B judge}     — never all three, never a mix.
 #   Enforced by SLEEP LEVEL 1 (the slept group's weights are offloaded OFF the GPU to
 #   CPU RAM — lossless, FP8-safe). So the params LOADED ON-GPU at any moment are exactly
-#   max(4+4, 8) = 8B, satisfying the committee's "≤ 8B loaded at any single moment" rule
-#   (Submission Guide §6.3). The committee counts TOTAL params that EXIST (4+4+8 = 16B) →
-#   that is what the launch guard checks against `max_resident_b` below; the *momentary*
-#   load is 8B.
+#   max(4+4, 8) = 8B, satisfying
+#   the committee's "≤ 8B loaded at any single moment" rule (Submission Guide §6.3).
+#   The committee counts TOTAL params that EXIST (4+4+8 = 16B) → that is what the
+#   launch guard checks against `max_resident_b` below; the *momentary* load is 8B.
 #
 # ── PRECISION + MEMORY (RTX 5090, 32 GiB ≈ 31.8 GiB usable) ───────────────────
 #   quantization: 8bit  → online FP8 (~1 byte/param) on this Blackwell card.
@@ -62,22 +45,19 @@
 #   the awake group. Measured/sized budget (eager ON, level-1 sleep):
 #       GEN  phase: 0.36·31.8 + 0.36·31.8 + ~4.1 (judge slept)   ≈ 27 GiB  ✓
 #       JUDGE phase: 0.60·31.8 + 2·~4.1 (gens slept)             ≈ 27 GiB  ✓
-#   If FP8 ever produces degenerate text on a future model, set quantization: 4bit
-#   (bitsandbytes NF4) as a fallback in this file.
+#   If FP8 ever produces degenerate text on a future model, set env QUANTIZATION=4bit
+#   (bitsandbytes NF4) as a fallback — that is the only other precision lever.
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Type 1 logic flow:
+# Logic flow:
 #   arbiter — generators think → the judge rules → code builds the submission
 #             object. With no role tags: every model generates and the highest-
 #             weight one arbitrates; a single-model line-up makes two passes
 #             (strict + skeptical) and self-judges.
 #   vote    — the cascade's weighted soft vote (no judge).
-#
-# Type 2 physics flow always uses the same role-tagged line-up when
-# physics_cascade is true: deterministic solver -> two generators -> judge.
 mode: arbiter
 
-# Disk swap. When true (default) and the line-up has a
+# Disk swap (env SWAP overrides). When true (default) and the line-up has a
 # `judge` role + ≥1 generator, the generators stay co-resident and the 8B judge is
 # swapped in (generators discarded to disk) only for its arbitration call — peak
 # GPU = the larger group, so the 2×4B + 8B line-up fits a 32 GB card AND only the
@@ -87,74 +67,40 @@ mode: arbiter
 # resident (would break the ≤8B rule).
 swap: true
 
-# Quantization for EVERY model (a model may override with its own
-# `quantization:`). One of:
+# Quantization for EVERY model (env QUANTIZATION overrides; a model may override
+# with its own `quantization:`). One of:
 #   none  — full precision bf16 (~2 B/param).
 #   8bit  — online FP8 (~1 B/param). Needs an Ada/Hopper/Blackwell GPU (4090/5070/5090);
 #           unsupported on Ampere (A100/3090). ← THIS DEPLOYMENT (RTX 5090).
 #   4bit  — bitsandbytes NF4 (~0.5 B/param). Fallback if FP8 misbehaves on a model.
 quantization: 8bit
 
-# Thinking mode for the reasoning calls (a model may override with its own
-# `thinking:`). true = the model emits a reasoning chain
+# Thinking mode for the reasoning calls (env THINKING overrides; a model may
+# override with its own `thinking:`). true = the model emits a reasoning chain
 # before its JSON verdict (better reasoning, slower); false = a direct answer.
 # Default true. Helper JSON calls (premises_used, option-pick fallback) are always
 # no-think regardless, and run against the AWAKE arbiter so the swap invariant holds.
 thinking: true
 
-# Sampling temperature for every model request (a model may override with its own
-# `temperature:`).
-# 0.0 is deterministic; raise it for more varied model outputs.
-temperature: 0.5
-
 # The residency budget the launch guard enforces (sum of params_b). The committee's
 # momentary limit is 8B; this 16 is the TOTAL-params-that-exist budget for the swap
-# line-up (4+4+8), which the launcher checks.
+# line-up (4+4+8), which the launcher checks. Env MAX_RESIDENT_B overrides.
 max_resident_b: 16
-
-# ── SERVE RUNTIME KNOBS ──────────────────────────────────────────────────────
-# These are intentionally kept here too, so one file controls the launched vLLM
-# servers and the gateway behavior.
-gateway_port: 8000
-vllm_base_port: 8001
-vllm_host: localhost
-max_model_len: 16384
-gpu_mem_util: 0.90
-max_num_seqs: 16
-residency_sleep_level: 1
-residency_op_timeout: 180
-residency_sleep_retries: 3
-gateway_llm_timeout: 240
-logic_think_tokens: 10000
-physics_think_tokens: 10000
-physics_max_new_tokens: 768
-physics_llm_explanation: false
-physics_cascade: true
-physics_llm_fallback: true
-enforce_eager: false
-language_model_only: true
 
 # ── THE GENERATE→JUDGE LINE-UP ───────────────────────────────────────────────
 # Each model accepts an optional `gpu_memory_utilization:` (0–1) pinning that
 # server's vLLM --gpu-memory-utilization, and optional per-model `quantization:` /
-# `thinking:` / `temperature:` overriding the globals. The fractions below are
-# sized so that the two co-resident generators (gen phase) and the lone judge
-# (judge phase) each fit the 32 GB card alongside the OTHER group's slept-process
-# residual (see budget above).
+# `thinking:` overriding the globals. The fractions below are sized so that the two
+# co-resident generators (gen phase) and the lone judge (judge phase) each fit the
+# 32 GB card alongside the OTHER group's slept-process residual (see budget above).
 models:
-  # ── GENERATORS (two 4B juniors, TEXT-ONLY → both sleep clean) ─────────────────
-  # Both are dense TEXT Qwen3-4B checkpoints whose weights vLLM sleep mode fully
-  # offloads to CPU RAM (verified: Qwen3-4B-Instruct slept to 730 MiB). They run
-  # CO-RESIDENT during generation (4B + 4B = 8B) and BOTH sleep for the judge phase,
-  # so peak resident = max(4+4, 8) = 8B. ⚠ Only add TEXT-ONLY (non-VLM) generators
-  # here — a VLM (e.g. Qwen3.5-4B) will NOT sleep-evict its weights and breaks ≤8B.
-  - id: Qwen/Qwen3-4B                # ungated, text-only, dense 4.0B (apache-2.0)
+  - id: Qwen/Qwen3.5-4B
     params_b: 4
     weight: 1.0
     role: generator
-    thinking: false                 # direct answers; the judge does the reasoning
+    thinking: false                 # direct answers; both generators run non-thinking and the judge does the reasoning
     gpu_memory_utilization: 0.36    # co-resident with the second 4B generator
-  - id: Qwen/Qwen3-4B-Instruct-2507  # ungated, text-only, non-thinking (direct-answer)
+  - id: Qwen/Qwen3-4B-Instruct-2507  # ungated, non-thinking (direct-answer) model
     params_b: 4
     weight: 1.0
     role: generator
@@ -162,10 +108,10 @@ models:
     gpu_memory_utilization: 0.36    # co-resident with the first 4B generator
   # ── JUDGE (the 8B) ─────────────────────────────────────────────────────────
   # Woken ALONE (both generators slept) for its arbitration call, so it gets the
-  # larger slice. Point at any HF repo by editing `id`; update params_b to the
-  # counted size for that model.
-  - id: google/gemma-4-E4B-it
-    params_b: 8
+  # larger slice. Point at any HF repo via env JUDGE_MODEL; JUDGE_PARAMS_B overrides
+  # the counted size.
+  - id: ${JUDGE_MODEL:-google/gemma-4-E4B-it}
+    params_b: ${JUDGE_PARAMS_B:-8}
     weight: 1.5
     role: judge
     thinking: true                  # set false for a faster, direct verdict
@@ -173,4 +119,4 @@ models:
 
 # ── Strict-8B alternatives (kept for reference) ──────────────────────────────
 # Line-up B (single Gemma-4-E4B, two passes + self-judge): one model, role judge.
-# Line-up C (Qwen3-4B alone): smallest, zero ambiguity, role judge.
+# Line-up C (Qwen3.5-4B alone): smallest, zero ambiguity, role judge.
