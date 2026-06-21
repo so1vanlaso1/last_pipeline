@@ -381,6 +381,10 @@ def _stub_completion(system: str, user: str) -> str:
         ans = "A" if has_options else "Yes"
         return ('{"chosen": 1, "answer": "%s", "premises_used": [1, 2], '
                 '"explanation": "Arbiter re-derives the answer from premises 1 and 2."}' % ans)
+    if "re-checking your own previous answer" in s:            # physics cascade reconcile pass
+        return ('{"chosen": "deterministic", "answer": "7", "unit": "A", '
+                '"explanation": "On re-check the fields add; correcting to the consensus.", '
+                '"steps": ["Re-derive the direction.", "Adopt the consensus value."]}')
     if "extract the senior physics arbiter" in s:              # physics cascade judge RE-EXTRACT (phase 2)
         return ('{"chosen": "self", "answer": "6", "unit": "A", '
                 '"explanation": "Re-extracted arbiter answer.", "steps": ["Re-extract."]}')

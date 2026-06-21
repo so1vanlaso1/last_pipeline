@@ -225,6 +225,109 @@ def test_type2_judge_prompt_includes_deterministic_candidate(monkeypatch):
     assert "reference only" in judge_users[0]
 
 
+def test_type2_judge_reconciles_against_consensus(monkeypatch):
+    """When the judge produces a usable answer that DISAGREES with a unanimous
+    reference consensus, a reconciliation pass runs and its corrected answer (still
+    8B-authored) becomes the final answer — no deterministic value is substituted."""
+    import gateway.physics_adapter as pa
+    from gateway.schema import PredictQuery
+    from gateway.vllm_client import LLMClient
+
+    deterministic = pa._candidate(
+        label="deterministic", source="deterministic", answer="7200", unit="V/m",
+        explanation="Fields add at the dipole midpoint.", steps=["E=|E1+E2|"], confidence=0.93,
+    )
+    adapter = _physics_adapter_with_stub_lineup(monkeypatch, deterministic)
+    calls = []
+
+    def fake_chat(self, system, user, **kwargs):
+        ctx = kwargs.get("log_context", "")
+        if "physics.judge.reconcile" in ctx:
+            calls.append("reconcile")
+            return ('{"chosen": "deterministic", "answer": "7200", "unit": "V/m", '
+                    '"explanation": "On re-check both fields point the same way and add.", "steps": ["x"]}')
+        if "physics.judge" in ctx:                  # phase-1 judge: a wrong, dissenting answer
+            calls.append("judge")
+            return '{"chosen": "self", "answer": "0", "unit": "V/m", "explanation": "Cancel.", "steps": ["x"]}'
+        return '{"answer": "7200", "unit": "V/m", "explanation": "g", "steps": ["x"], "confidence": 0.9}'
+
+    monkeypatch.setattr(LLMClient, "chat", fake_chat)
+    r = adapter.answer(PredictQuery(query_id="P-RECON", type="type2",
+                                    query="Field at the midpoint of a +/-4nC dipole 20cm apart."))
+    assert "reconcile" in calls          # the reconciliation pass fired
+    assert r.answer == "7200"            # the judge corrected itself to the consensus
+    assert r.unit == "V/m"
+
+
+def test_type2_judge_does_not_reconcile_without_consensus(monkeypatch):
+    """No reconciliation when the references do NOT unanimously agree: the judge's own
+    answer stands and no extra pass runs."""
+    import gateway.physics_adapter as pa
+    from gateway.schema import PredictQuery
+    from gateway.vllm_client import LLMClient
+
+    deterministic = pa._candidate(
+        label="deterministic", source="deterministic", answer="4", unit="A",
+        explanation="det", steps=["s"], confidence=0.9,
+    )
+    adapter = _physics_adapter_with_stub_lineup(monkeypatch, deterministic)
+    calls = []
+
+    def fake_chat(self, system, user, **kwargs):
+        ctx = kwargs.get("log_context", "")
+        if "physics.judge.reconcile" in ctx:
+            calls.append("reconcile")
+            return '{"chosen": "self", "answer": "99", "unit": "A", "explanation": "x", "steps": ["x"]}'
+        if "physics.judge" in ctx:
+            return '{"chosen": "self", "answer": "6", "unit": "A", "explanation": "Judge.", "steps": ["x"]}'
+        # generators disagree with each other and with deterministic -> no consensus
+        return '{"answer": "5", "unit": "A", "explanation": "g", "steps": ["x"], "confidence": 0.6}'
+
+    monkeypatch.setattr(LLMClient, "chat", fake_chat)
+    r = adapter.answer(PredictQuery(query_id="P-NOCONS", type="type2", query="Find the current."))
+    assert "reconcile" not in calls      # references did not agree -> no reconciliation
+    assert r.answer == "6"               # the judge's own answer stands
+    assert r.unit == "A"
+
+
+def test_type2_judge_prompt_has_consensus_rule(monkeypatch):
+    """The judge prompt must push extra reasoning when it dissents from a 3-way
+    consensus (the dipole-midpoint failure: deterministic + both juniors say 7200
+    V/m, a wrong judge says 0). It must treat the agreement as evidence its own work
+    is wrong, recheck vector directions, and adopt the consensus unless it can name a
+    concrete error."""
+    import gateway.physics_adapter as pa
+    from gateway.schema import PredictQuery
+    from gateway.vllm_client import LLMClient
+
+    deterministic = pa._candidate(
+        label="deterministic", source="deterministic", answer="7200", unit="V/m",
+        explanation="Fields add at the midpoint of a dipole.", steps=["E=|E1+E2|"],
+        confidence=0.93,
+    )
+    adapter = _physics_adapter_with_stub_lineup(monkeypatch, deterministic)
+    judge_systems = []
+
+    def fake_chat(self, system, user, **kwargs):
+        if "physics.judge" in kwargs.get("log_context", ""):
+            judge_systems.append(system)
+            return ('{"chosen": "deterministic", "answer": "7200", "unit": "V/m", '
+                    '"explanation": "Both fields point the same way and add.", "steps": ["x"]}')
+        return '{"answer": "7200", "unit": "V/m", "explanation": "g", "steps": ["x"], "confidence": 0.9}'
+
+    monkeypatch.setattr(LLMClient, "chat", fake_chat)
+    r = adapter.answer(PredictQuery(query_id="P-CONS", type="type2",
+                                    query="Field at the midpoint of a +/-4nC dipole 20cm apart."))
+    assert judge_systems
+    sys = judge_systems[0].lower()
+    assert "consensus" in sys                 # the 3-way agreement rule is present
+    assert "not always right" in sys          # the judge is told it can be wrong
+    assert "direction" in sys                 # recheck the error-prone vector step
+    # When the judge endorses the consensus value, that is the final answer + unit.
+    assert r.answer == "7200"
+    assert r.unit == "V/m"
+
+
 def test_type2_invalid_judge_returns_uncertain_not_deterministic(monkeypatch):
     """No-fallback policy: when the 8B judge yields nothing usable even after the
     recovery ladder (here phase-1 prose AND the phase-2 re-extract both fail), the
