@@ -440,6 +440,126 @@ def _run_generators(gen_specs, record: Record) -> List[Dict[str, Any]]:
         ))
 
 
+# ── Consensus reconciliation ─────────────────────────────────────────────────
+# When BOTH juniors agree on an answer the judge contradicted, the judge gets ONE
+# extra pass: it must find its own error or justify the dissent from a specific
+# premise. The reconciled verdict is still the JUDGE's own decision (we never swap
+# in a junior's answer wholesale) — it just stops a lone, over-confident judge from
+# overturning a unanimous generator consensus on a slip. Runs inside the judge swap.
+
+def _generator_consensus_canon(cands: List[Dict[str, Any]]) -> Optional[str]:
+    """The canonical answer BOTH juniors agree on (non-empty), else None."""
+    canons = [c.get("canon") for c in cands if c.get("canon")]
+    if len(canons) >= 2 and all(c == canons[0] for c in canons):
+        return canons[0]
+    return None
+
+
+def _generator_consensus_answer(cands: List[Dict[str, Any]]) -> Optional[str]:
+    """The free-form answer BOTH juniors agree on (case-insensitive, non-empty), else None."""
+    answers = [str(c.get("answer", "")).strip().lower() for c in cands if str(c.get("answer", "")).strip()]
+    if len(answers) >= 2 and all(a == answers[0] for a in answers):
+        return answers[0]
+    return None
+
+
+def _reconcile_choice(
+    arbiter: LLMClient, q: PredictQuery, record: Record,
+    cands: List[Dict[str, Any]], data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """One extra judge pass when both juniors agree on a choice the judge contradicted.
+    Returns the (possibly corrected) judge JSON — still the judge's own verdict."""
+    consensus = _generator_consensus_canon(cands)
+    if consensus is None:
+        return data
+    ans_raw = str(data.get("answer", "")).strip()
+    judge_canon = canonicalize(ans_raw, record)[0] if ans_raw else None
+    if judge_canon is None or judge_canon == consensus:
+        return data
+    consensus_display = next(
+        (c["display"] or c["answer_raw"] for c in cands if c.get("canon") == consensus),
+        consensus,
+    )
+    system = (
+        "You are the SENIOR examiner and must RE-CHECK YOUR VERDICT. BOTH junior "
+        "examiners independently reached the SAME answer, which DIFFERS from yours. Two "
+        "independent examiners agreeing is strong evidence that YOUR reasoning has a "
+        "flaw, so assume you made a mistake and find it. Re-derive strictly from the "
+        "premises, watching the usual traps (converse/inverse of a rule, 'some' vs "
+        "'all', and answering 'No' when only 'Not Given' is proven). Change your answer "
+        "to match the juniors UNLESS you can cite a specific premise that proves them "
+        "wrong.\n\nApply these examiner rules:\n" + rules_for(record)
+        + "\n\nFinish your reply with ONE JSON object on its own line:\n"
+        '{"chosen": <1 or 2>, "answer": ' + _answer_space(record)
+        + ', "premises_used": [<1-based premise numbers you determine are needed>], '
+        '"explanation": <2-4 sentences citing those premises>}'
+    )
+    user = (
+        build_user(record)
+        + f"\n\nBOTH juniors agree the answer is: {consensus_display}."
+        + f"\nYour previous answer was: {ans_raw or '(none)'}."
+        + "\n\nJunior answers:\n" + _render_candidates(cands)
+        + "\n\nFind your error and give the correct answer."
+    )
+    try:
+        text = _chat(
+            arbiter, system, user, query_id=q.query_id, stage="arbiter.judge.reconcile",
+            loaded_clients=[arbiter], max_tokens=_think_tokens(),
+        )
+    except Exception:
+        return data
+    recon = extract_last_json_object(text) or {}
+    return recon if str(recon.get("answer", "")).strip() else data
+
+
+def _reconcile_free_form(
+    arbiter: LLMClient, q: PredictQuery, guser: str,
+    cands: List[Dict[str, Any]], data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """One extra judge pass when both juniors agree on a free-form answer the judge
+    contradicted. Returns the (possibly corrected) judge JSON."""
+    consensus = _generator_consensus_answer(cands)
+    if consensus is None:
+        return data
+    judge_ans = _plain_free_form_answer(data.get("answer")).strip().lower()
+    if not judge_ans or judge_ans == consensus:
+        return data
+    consensus_display = next(
+        (c["answer"] for c in cands if str(c.get("answer", "")).strip().lower() == consensus),
+        consensus,
+    )
+    system = (
+        "You are the senior arbiter and must RE-CHECK YOUR VERDICT. BOTH juniors "
+        "independently gave the SAME answer, which DIFFERS from yours. Their agreement "
+        "is strong evidence your answer is wrong, so assume you erred and find the "
+        "mistake. Re-derive strictly from the premises and change your answer to match "
+        "the juniors UNLESS you can cite a specific premise proving them wrong. Finish "
+        'with ONE JSON object: {"chosen": <1 or 2>, "answer": <a number or short text>, '
+        '"premises_used": [<1-based>], "explanation": <1-2 sentences>}. '
+        "If the answer is numeric, use an unrounded plain ASCII decimal or integer only."
+    )
+    user = (
+        guser
+        + f"\n\nBOTH juniors agree the answer is: {consensus_display}."
+        + f"\nYour previous answer was: {str(data.get('answer', '')).strip() or '(none)'}."
+        + "\n\nJunior answers:\n" + "\n".join(
+            f"Junior {i} ({c['label']}): answer={c['answer'] or 'N/A'}; "
+            f"premises_used={[j + 1 for j in c['premises_used']]}; explanation={c['explanation'] or '(none)'}"
+            for i, c in enumerate(cands, 1))
+        + "\n\nFind your error and give the correct answer."
+    )
+    try:
+        text = _chat(
+            arbiter, system, user, query_id=q.query_id,
+            stage="arbiter.free_form_judge.reconcile", loaded_clients=[arbiter],
+            max_tokens=_think_tokens(),
+        )
+    except Exception:
+        return data
+    recon = extract_last_json_object(text) or {}
+    return recon if str(recon.get("answer", "")).strip() else data
+
+
 def _arbiter_choice(gen_specs, arbiter: LLMClient, q: PredictQuery) -> PredictResult:
     options = list(q.options or [])
     as_mcq = not looks_like_ynn(options)
@@ -454,7 +574,9 @@ def _arbiter_choice(gen_specs, arbiter: LLMClient, q: PredictQuery) -> PredictRe
         "same question. Using ONLY the premises, decide which junior's ANSWER is correct; "
         "if both are wrong, give the correct answer yourself. Then INDEPENDENTLY work out "
         "which premises are actually required and write the explanation in your own words "
-        "— use the juniors' work only as a reference, do NOT copy it.\n\n"
+        "— use the juniors' work only as a reference, do NOT copy it. If BOTH juniors give "
+        "the SAME answer, treat that agreement as strong evidence it is correct and "
+        "override it ONLY if you can cite a specific premise that proves them wrong.\n\n"
         "Apply these examiner rules:\n" + rules_for(record)
         + "\n\nFinish your reply with ONE JSON object on its own line:\n"
         '{"chosen": <1 or 2 — the junior you judged correct>, "answer": ' + _answer_space(record)
@@ -474,6 +596,8 @@ def _arbiter_choice(gen_specs, arbiter: LLMClient, q: PredictQuery) -> PredictRe
         except Exception:
             text = ""
         data = extract_last_json_object(text) or {}
+        if judge_ready:
+            data = _reconcile_choice(arbiter, q, record, cands, data)
 
         ans_raw = str(data.get("answer", "")).strip()
         canon, display = canonicalize(ans_raw, record) if ans_raw else (None, "")
@@ -555,7 +679,9 @@ def _arbiter_free_form(gen_specs, arbiter: LLMClient, q: PredictQuery) -> Predic
 
     asys = (
         "You are the senior arbiter. Two juniors answered the same question. Using ONLY the "
-        "premises, decide which answer is correct (or give the correct one yourself). Then "
+        "premises, decide which answer is correct (or give the correct one yourself). If BOTH "
+        "juniors give the SAME answer, treat that agreement as strong evidence it is correct "
+        "and override it only with a specific premise-based reason. Then "
         "INDEPENDENTLY determine premises_used and write the explanation in your own words "
         "(reference the juniors, do not copy). Finish with ONE JSON object: "
         '{"chosen": <1 or 2>, "answer": <a number or short text>, "premises_used": '
@@ -577,7 +703,11 @@ def _arbiter_free_form(gen_specs, arbiter: LLMClient, q: PredictQuery) -> Predic
             ) if judge_ready else ""     # judge not woken (swap degrade) -> use juniors
         except Exception:
             text = ""
-    data = extract_last_json_object(text) or {}
+        # Extract + reconcile INSIDE the swap so the 8B is still awake for any
+        # consensus-reconciliation pass (after the block it is slept again).
+        data = extract_last_json_object(text) or {}
+        if judge_ready:
+            data = _reconcile_free_form(arbiter, q, guser, cands, data)
 
     answer = _plain_free_form_answer(data.get("answer"))
     chosen = _chosen_candidate(data, cands)

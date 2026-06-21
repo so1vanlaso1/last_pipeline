@@ -619,5 +619,110 @@ def test_arbiter_does_not_borrow_mismatched_junior_premises(monkeypatch):
     assert "contradicts" not in r.explanation
 
 
+def test_type1_arbiter_reconciles_when_juniors_agree(monkeypatch):
+    """Both generators agree (Yes) but the judge dissents (No): a reconciliation pass
+    runs and the judge's corrected answer (Yes) is used."""
+    monkeypatch.setenv("LOGIC_MODE", "arbiter")
+    import gateway.logic_adapter as la
+    from gateway.schema import PredictQuery
+
+    cands = [
+        {"label": "j1", "canon": "Yes", "display": "Yes", "answer_raw": "Yes",
+         "premises_used": [0], "explanation": "Premise 1 entails it."},
+        {"label": "j2", "canon": "Yes", "display": "Yes", "answer_raw": "Yes",
+         "premises_used": [0], "explanation": "Premise 1 entails it."},
+    ]
+    monkeypatch.setattr(la, "_run_generators", lambda gen_specs, record: cands)
+    calls = []
+
+    def fake_chat(client, system, user, **kwargs):
+        if "reconcile" in kwargs.get("stage", ""):
+            calls.append("reconcile")
+            return '{"chosen": 1, "answer": "Yes", "premises_used": [1], "explanation": "On re-check the juniors are right."}'
+        calls.append("judge")
+        return '{"answer": "No", "premises_used": [1], "explanation": "Judge dissent."}'
+
+    monkeypatch.setattr(la, "_chat", fake_chat)
+    judges = [
+        _stub("qwen-4b", 1.0, "4b", "generator"),
+        _stub("gemma-e2b", 1.0, "4b", "generator"),
+        _stub("gemma-8b-judge", 1.5, "8b", "judge"),
+    ]
+    q = PredictQuery(query_id="R1", type="type1", query="Entailed?",
+                     premises=["All A are B.", "x is A."], options=["Yes", "No", "Uncertain"])
+    r = la.answer_type1(judges, q)
+    assert "reconcile" in calls          # the reconciliation pass fired
+    assert r.answer == "Yes"             # judge corrected itself to the juniors' consensus
+
+
+def test_type1_arbiter_no_reconcile_when_juniors_disagree(monkeypatch):
+    """When the two generators disagree, there is no consensus, so no reconciliation
+    pass runs and the judge's own answer stands."""
+    monkeypatch.setenv("LOGIC_MODE", "arbiter")
+    import gateway.logic_adapter as la
+    from gateway.schema import PredictQuery
+
+    cands = [
+        {"label": "j1", "canon": "No", "display": "No", "answer_raw": "No",
+         "premises_used": [0], "explanation": "a"},
+        {"label": "j2", "canon": "Yes", "display": "Yes", "answer_raw": "Yes",
+         "premises_used": [1], "explanation": "b"},
+    ]
+    monkeypatch.setattr(la, "_run_generators", lambda gen_specs, record: cands)
+    calls = []
+
+    def fake_chat(client, system, user, **kwargs):
+        if "reconcile" in kwargs.get("stage", ""):
+            calls.append("reconcile")
+            return '{"answer": "Uncertain"}'
+        return '{"answer": "Yes", "premises_used": [2], "explanation": "Judge."}'
+
+    monkeypatch.setattr(la, "_chat", fake_chat)
+    judges = [
+        _stub("qwen-4b", 1.0, "4b", "generator"),
+        _stub("gemma-e2b", 1.0, "4b", "generator"),
+        _stub("gemma-8b-judge", 1.5, "8b", "judge"),
+    ]
+    q = PredictQuery(query_id="R2", type="type1", query="Entailed?",
+                     premises=["All A are B.", "x is A."], options=["Yes", "No", "Uncertain"])
+    r = la.answer_type1(judges, q)
+    assert "reconcile" not in calls      # generators disagreed -> no reconciliation
+    assert r.answer == "Yes"             # the judge's own answer stands
+
+
+def test_type1_free_form_arbiter_reconciles(monkeypatch):
+    """Free-form arbiter: both juniors agree (42), the judge dissents (7), and the
+    reconciliation pass corrects it back to 42."""
+    monkeypatch.setenv("LOGIC_MODE", "arbiter")
+    import gateway.logic_adapter as la
+    from gateway.schema import PredictQuery
+
+    calls = []
+
+    def fake_chat(client, system, user, **kwargs):
+        stage = kwargs.get("stage", "")
+        if "free_form_generator" in stage:
+            return '{"answer": "42", "premises_used": [1], "explanation": "gen"}'
+        if "reconcile" in stage:
+            calls.append("reconcile")
+            return '{"answer": "42", "premises_used": [1], "explanation": "On re-check the juniors are right."}'
+        if "free_form_judge" in stage:
+            calls.append("judge")
+            return '{"answer": "7", "premises_used": [1], "explanation": "Judge dissent."}'
+        return "{}"
+
+    monkeypatch.setattr(la, "_chat", fake_chat)
+    judges = [
+        _stub("qwen-4b", 1.0, "4b", "generator"),
+        _stub("gemma-e2b", 1.0, "4b", "generator"),
+        _stub("gemma-8b-judge", 1.5, "8b", "judge"),
+    ]
+    q = PredictQuery(query_id="R3", type="type1", query="How many?",
+                     premises=["There are 42."], options=[])
+    r = la.answer_type1(judges, q)
+    assert "reconcile" in calls
+    assert r.answer == "42"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
