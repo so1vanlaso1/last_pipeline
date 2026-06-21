@@ -377,6 +377,10 @@ def _stub_completion(system: str, user: str) -> str:
     has_options = "options:" in u.lower()
     if "option_index" in s:                                    # MCQ pick fallback
         return '{"option_index": 0}'
+    if "re-check your verdict" in s:                            # logic arbiter reconcile pass
+        ans = "A" if has_options else "Yes"
+        return ('{"chosen": 1, "answer": "%s", "premises_used": [1, 2], '
+                '"explanation": "On re-check both juniors agree; adopting their answer."}' % ans)
     if "senior examiner and arbiter" in s:                     # arbiter (choice)
         ans = "A" if has_options else "Yes"
         return ('{"chosen": 1, "answer": "%s", "premises_used": [1, 2], '
